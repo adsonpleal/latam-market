@@ -164,13 +164,16 @@ export interface ItemPrices {
  * aberta o dia inteiro. Em lote é uma. Não há SQL novo aqui — `itemPrice` é leitura do
  * cache quente (`store/cache.ts`), então cem ids são cem buscas em `Map`.
  *
- * Só aceita id, nunca nome: `resolveItem` responde 300 com candidatos quando o nome é
- * ambíguo, e um 300 não compõe em lote — um nome ambíguo derrubaria a leitura dos outros
- * noventa e nove. Quem tem nome resolve antes, item por item.
+ * Só aceita id, nunca nome — quem tem nome passa por `resolveItems` (`core/items.ts`)
+ * antes, que separa o que resolveu do que ficou ambíguo. Aqui a lista já é de ids.
  *
  * Id desconhecido vai para `missing` em vez de sumir da resposta: quem colou um id errado
  * precisa saber disso, e um buraco silencioso na lista significaria um alerta que nunca
  * dispara sem ninguém entender por quê.
+ *
+ * Id repetido é lido uma vez só. A regra mora aqui e não em quem chama porque as duas
+ * formas de repetir chegam por caminhos diferentes — `502,502` na query da rota, ou dois
+ * nomes distintos do mesmo item vindos do agente — e as duas querem a mesma resposta.
  */
 export function itemPrices(
   server: Server,
@@ -179,8 +182,11 @@ export function itemPrices(
 ): ItemPrices {
   const prices: ItemPrice[] = [];
   const missing: number[] = [];
+  const lidos = new Set<number>();
 
   for (const itemId of itemIds) {
+    if (lidos.has(itemId)) continue;
+    lidos.add(itemId);
     const price = itemPrice(server, itemId, cheapest);
     if (price) prices.push(price);
     else missing.push(itemId);

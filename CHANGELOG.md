@@ -3,6 +3,43 @@
 Mais recente primeiro. A seção do topo é a fonte do post de novidades no Discord
 (`tools/post-novidades.mjs`), então escreva pensando em quem vai ler lá.
 
+## 0.7.0 — 2026-08-10
+
+- **Novidade: o simulador de visuais agora sabe o que dá para comprar.** O catálogo de lá
+  ganhou os filtros "já visto no mercado" e "à venda agora", e cada visual leva direto
+  para a página do item aqui. Quem monta um visual descobre na hora o que está numa loja
+  neste momento e o que só existe no sonho.
+  - Do lado daqui é uma rota nova, `GET /api/v1/ids`: dois vetores de ids — `inMarket` e
+    `forSale` — sem preço e sem paginação, com o mesmo `nextTradingAt` do lote. Um
+    catálogo de fora se filtra inteiro com uma requisição, em vez das dezenas de páginas
+    de busca que isso custava.
+  - `visuais.latam-tools.com.br` entrou na allowlist de origens; é o que permite o
+    navegador chamar a API de lá.
+
+- **O agente também pergunta o preço de vários itens de uma vez.** O lote existia só na
+  API (`GET /api/v1/prices`); agora é a ferramenta `get_prices` do MCP, com o mesmo teto de
+  100 itens e resposta idêntica, item por item, à do `get_price` sozinho. Perguntar "quanto
+  vale essa lista aqui?" deixou de custar uma chamada por item.
+  - Uma referência ruim no meio da lista não derruba o resto: id que o mercado não conhece
+    sai em `missing`, nome ambíguo ou inexistente sai em `naoResolvidos` com o motivo.
+  - A busca aceita lista de ids (`502,501`) desde a 0.5.0, mas o schema do MCP dizia "id
+    exato", no singular — nenhum agente tinha por que tentar. Agora está escrito lá.
+
+- **E pergunte ao agente quais são os mais baratos.** O `search_items` do MCP ganhou
+  `ordenar` e `decrescente`, as mesmas ordens que a tabela do site usa (`price`, `median`,
+  `stores`, `units`, `discount`, `sold`, `market_*`, `name`, `id`). A ordem sai do conjunto
+  inteiro, como no site: "as dez poções mais baratas" são as mais baratas de todas, não as
+  mais baratas das dez que couberam na página. A resposta do MCP continua sem as colunas de
+  preço — os ids saem ordenados e o `get_prices` traz os números de quem você quiser.
+- **`market_ids` fecha a última rota que só a API tinha.** Os dois vetores de ids do
+  `GET /api/v1/ids` — o que já passou pelo mercado e o que está à venda agora — agora
+  também pelo MCP, para cruzar com uma lista grande de itens de uma vez. São alguns
+  milhares de números e a ferramenta avisa disso: para quase toda pergunta, `search_items`
+  com `aVendaAgora` ou `get_prices` custam muito menos.
+  - No mesmo pente-fino: o `data_status` agora aceita `coletas`, o `limit` que
+    `GET /api/v1/snapshots` já tinha e ele não. Com isso o MCP não tem mais nenhuma rota
+    nem parâmetro da API sem equivalente.
+
 ## 0.6.0 — 2026-08-10
 
 - **Mudança: a consulta ao vivo saiu.** Era uma requisição ao site no meio do seu pedido —

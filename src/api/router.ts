@@ -14,7 +14,7 @@ import type { DatabaseSync } from "node:sqlite";
 
 import { appraise } from "../core/appraise.js";
 import type { Dataset } from "../core/datasets.js";
-import { SEARCH_SORTS, isSearchSort, resolveItem } from "../core/items.js";
+import { SEARCH_SORTS, isSearchSort, marketedIds, resolveItem } from "../core/items.js";
 import { findDeals, topMovers } from "../core/movers.js";
 import {
   DEFAULT_CHEAPEST,
@@ -127,6 +127,20 @@ function serverOf(url: URL): Server {
     throw new HttpError(400, `servidor '${raw}' não existe`, { servidores: SERVERS });
   }
   return parsed;
+}
+
+/**
+ * Quando a próxima coleta de anúncios pousa.
+ *
+ * Numa função só porque duas rotas publicam o mesmo número — `/prices` e `/ids`. Com a
+ * conta escrita duas vezes, mudar a cadência acertaria uma e deixaria a outra mentindo.
+ */
+function nextTradingAt(ctx: RouteContext, server: Server, tradingAt: number | null): number | null {
+  return nextTradingRun(
+    ctx.nextRun?.("trading", server) ?? null,
+    tradingAt,
+    config.crawl.tradingEveryMin,
+  );
 }
 
 export async function handleApi(ctx: RouteContext): Promise<boolean> {
@@ -278,11 +292,28 @@ export async function handleApi(ctx: RouteContext): Promise<boolean> {
       // Deixa o cliente dormir até a coleta pousar em vez de perguntar em intervalo fixo.
       // Sem isto ele teria de escolher uma cadência no escuro — e qualquer escolha ou
       // desperdiça requisição ou atrasa o aviso.
-      nextTradingAt: nextTradingRun(
-        ctx.nextRun?.("trading", server) ?? null,
-        atual.tradingAt,
-        config.crawl.tradingEveryMin,
-      ),
+      nextTradingAt: nextTradingAt(ctx, server, atual.tradingAt),
+    });
+    return true;
+  }
+
+  /**
+   * Só os ids: o que já passou pelo mercado e o que está à venda agora.
+   *
+   * Para quem tem catálogo próprio e quer filtrá-lo — o simulador de visuais mostra
+   * 1.494 visuais e precisa saber quais dá para comprar. Pela busca seriam dezenas de
+   * páginas de `limit=100`, cada linha com preço e links que ele não usaria; aqui são
+   * dois vetores de inteiros que o cliente guarda até `nextTradingAt`.
+   *
+   * Sem paginação de propósito: o corpo inteiro tem alguns milhares de números, e
+   * paginar um conjunto que só faz sentido completo obrigaria o cliente a remontá-lo.
+   */
+  if (rest === "ids" && method === "GET") {
+    const atual = freshness(server);
+    json(res, 200, {
+      ...marketedIds(server),
+      freshness: atual,
+      nextTradingAt: nextTradingAt(ctx, server, atual.tradingAt),
     });
     return true;
   }

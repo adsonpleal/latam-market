@@ -19,16 +19,31 @@ import type { DatabaseSync } from "node:sqlite";
 import { z } from "zod";
 
 import { appraise } from "../core/appraise.js";
-import { resolveItem, searchItems } from "../core/items.js";
+import {
+  type Resolution,
+  SEARCH_SORTS,
+  type SearchSort,
+  marketedIds,
+  resolveItem,
+  resolveItems,
+  searchItems,
+} from "../core/items.js";
 import { findDeals, topMovers } from "../core/movers.js";
-import { cheapestOffers, freshness, history, itemPrice } from "../core/prices.js";
+import {
+  DEFAULT_CHEAPEST,
+  cheapestOffers,
+  freshness,
+  history,
+  itemPrice,
+  itemPrices,
+} from "../core/prices.js";
 import { sellCandidates, valueReplay } from "../core/replay.js";
 import type { Server } from "../core/servers.js";
 import { serviceStatus } from "../core/status.js";
 import { EQUIP_SLOTS, ITEM_CATEGORIES } from "../core/taxonomy.js";
 
 import { config } from "../server/config.js";
-import { json, paged, registerJsonTool } from "./helpers.js";
+import { json, jsonCompact, paged, registerJsonTool } from "./helpers.js";
 
 /** Rota que recebe o `.rrf` binário, sem o custo do base64. */
 const API_REPLAY_URL = `${config.publicUrl}/api/v1/replay`;
@@ -63,7 +78,12 @@ const SCHEMAS = {
     query: z
       .string()
       .optional()
-      .describe('Texto livre ou id exato. "pocao" acha "Poção"; "501" acha o item 501. Opcional quando há `tipo` ou `slot`.'),
+      .describe(
+        'Texto livre, um id exato, ou uma lista de ids. "pocao" acha "Poção"; "501" acha ' +
+          'o item 501; "502,501" (vírgula ou espaço) devolve os dois na ordem digitada, ' +
+          "que é como comparar um punhado de itens sem uma chamada para cada. Id sempre " +
+          "aparece mesmo fora do mercado. Opcional quando há `tipo` ou `slot`.",
+      ),
     tipo: z
       .enum(ITEM_CATEGORIES.map((c) => c.id) as [string, ...string[]])
       .optional()
@@ -85,6 +105,29 @@ const SCHEMAS = {
         "Só itens com anúncio ativo na coleta mais recente. Mais estreito que o " +
           "anterior: aquele é 'já apareceu alguma vez', este é 'dá para comprar agora'.",
       ),
+    // Quem ordena é o servidor, sobre o CONJUNTO — ordenar a página devolvida responderia
+    // "o mais barato destes vinte" com cara de "o mais barato". Por isso a opção existe
+    // aqui e não fica a cargo do agente reordenar o que recebeu.
+    ordenar: z
+      .enum(SEARCH_SORTS)
+      .optional()
+      .default("relevance")
+      .describe(
+        "Ordem do conjunto inteiro. `relevance` (padrão) é o casamento com o texto; " +
+          "`price` é a oferta mais barata de agora, `median` a mediana das lojas, " +
+          "`stores` quantas vendem, `units` quantas unidades há, `discount` o quanto a " +
+          "oferta está abaixo do histórico, `sold`/`market_avg`/`market_min`/`market_max` " +
+          "vêm do agregado do site, e `name`/`id` são a ordem óbvia. A resposta continua " +
+          "sem preço: peça os ids aqui e passe-os a `get_prices` se precisar dos números.",
+      ),
+    decrescente: z
+      .boolean()
+      .optional()
+      .default(false)
+      .describe(
+        "Inverte a ordem. Item sem o dado pedido fica no fim NOS DOIS SENTIDOS — o mais " +
+          "caro é o mais caro que alguém vende, não uma página de itens sem oferta.",
+      ),
     limit: limit(20),
     offset: z.number().int().min(0).optional().default(0),
   },
@@ -98,6 +141,27 @@ const SCHEMAS = {
       .optional()
       .default(5)
       .describe("Quantas ofertas mais baratas incluir."),
+  },
+  getPrices: {
+    itens: z
+      .array(itemRef)
+      .min(1)
+      .max(
+        config.limits.maxBatchItems,
+        `no máximo ${config.limits.maxBatchItems} itens por chamada`,
+      )
+      .describe("Ids ou nomes. Cada um resolvido como em `get_price`; repetido conta uma vez."),
+    // Zero por padrão, ao contrário do `get_price`: cinco ofertas para um item cabem na
+    // resposta, cinco vezes cem não — o lote existe para caber, e quem quiser as lojas de
+    // um item específico chama `list_offers`. O teto acompanha o da rota REST.
+    ofertas: z
+      .number()
+      .int()
+      .min(0)
+      .max(DEFAULT_CHEAPEST)
+      .optional()
+      .default(0)
+      .describe("Quantas ofertas mais baratas incluir POR ITEM. Multiplica o tamanho da resposta."),
   },
   listOffers: { item: itemRef, limit: limit(20) },
   history: {
@@ -128,7 +192,10 @@ const SCHEMAS = {
     minPreco: z.number().int().min(0).optional().default(5000),
     limit: limit(20),
   },
-  status: {},
+  // O equivalente do `limit` de `GET /api/v1/snapshots`: a rota deixa escolher quantas
+  // coletas listar, e não havia motivo para o agente ficar preso num número fixo.
+  status: { coletas: limit(10, 50).describe("Quantas coletas recentes listar.") },
+  marketIds: {},
   valueInventory: {
     dados: z.string().describe("Conteúdo do arquivo .rrf codificado em base64."),
     incluirEquipados: z
@@ -146,17 +213,31 @@ const SCHEMAS = {
   },
 } as const;
 
+/**
+ * A mensagem de uma referência que não virou um item só.
+ *
+ * Separada do `resolveOrThrow` porque o lote não pode lançar: um nome ambíguo entre cem
+ * derrubaria as outras noventa e nove resoluções boas. Lá ela vai numa lista ao lado dos
+ * preços; aqui, na exceção. O texto é o mesmo nos dois — é o mesmo problema.
+ */
+function resolutionProblem(
+  ref: string | number,
+  resolved: Exclude<Resolution, { kind: "found" }>,
+): string {
+  if (resolved.kind === "ambiguous") {
+    return (
+      `"${ref}" casa com vários itens. Escolha um: ` +
+      resolved.candidates.map((c) => `${c.name} (id ${c.itemId})`).join(", ")
+    );
+  }
+  return `Nenhum item encontrado para "${ref}". Tente search_items primeiro.`;
+}
+
 /** Resolve a referência ou lança com os candidatos — o agente lê e repergunta. */
 function resolveOrThrow(server: Server, ref: string | number): number {
   const resolved = resolveItem(server, ref);
   if (resolved.kind === "found") return resolved.item.itemId;
-  if (resolved.kind === "ambiguous") {
-    throw new Error(
-      `"${ref}" casa com vários itens. Escolha um: ` +
-        resolved.candidates.map((c) => `${c.name} (id ${c.itemId})`).join(", "),
-    );
-  }
-  throw new Error(`Nenhum item encontrado para "${ref}". Tente search_items primeiro.`);
+  throw new Error(resolutionProblem(ref, resolved));
 }
 
 export function registerTools(server: McpServer, db: DatabaseSync): void {
@@ -168,6 +249,8 @@ export function registerTools(server: McpServer, db: DatabaseSync): void {
     slot?: string;
     incluirForaDoMercado?: boolean;
     aVendaAgora?: boolean;
+    ordenar?: SearchSort;
+    decrescente?: boolean;
     limit?: number;
     offset?: number;
   }>(
@@ -179,7 +262,8 @@ export function registerTools(server: McpServer, db: DatabaseSync): void {
         "Busca itens pelo nome, ou pelo id exato, e devolve o id de cada um. Use quando " +
         "não souber o id — as outras ferramentas também aceitam nome, então só é " +
         "necessário quando a busca é ampla. Um id exato vem primeiro e aparece mesmo " +
-        "que o item não esteja à venda no momento.",
+        "que o item não esteja à venda no momento. Com `ordenar` responde também " +
+        "'quais são os mais baratos?' — a ordem sai do conjunto inteiro, não da página.",
       inputSchema: SCHEMAS.search,
     },
     (args, market) => {
@@ -188,6 +272,8 @@ export function registerTools(server: McpServer, db: DatabaseSync): void {
         query: args.query,
         type: args.tipo,
         slot: args.slot,
+        sort: args.ordenar,
+        desc: args.decrescente,
         limit: args.limit ?? 20,
         offset: args.offset ?? 0,
         onlyInMarket: !args.incluirForaDoMercado,
@@ -216,6 +302,41 @@ export function registerTools(server: McpServer, db: DatabaseSync): void {
     },
     (args, market) =>
       json({ ...itemPrice(market, resolveOrThrow(market, args.item), args.ofertas ?? 5), freshness: freshness(market) }),
+  );
+
+  registerJsonTool<{ itens: Array<string | number>; ofertas?: number }>(
+    server,
+    "get_prices",
+    {
+      title: "Preço de vários itens de uma vez",
+      description:
+        "O mesmo que `get_price`, para uma lista de itens numa chamada só. Use quando já " +
+        "tiver os ids — comparar uma lista, precificar um inventário, conferir favoritos. " +
+        "Cada preço vem idêntico ao que `get_price` devolveria; id que o mercado não " +
+        "conhece sai em `missing`, e referência que não resolveu (nome ambíguo ou " +
+        "inexistente) sai em `naoResolvidos`, com o motivo — o lote nunca cai por causa " +
+        "de uma linha.",
+      inputSchema: SCHEMAS.getPrices,
+    },
+    (args, market) => {
+      const { ids, unresolved } = resolveItems(market, args.itens);
+
+      // Sem o `nextTradingAt` que a rota devolve: aquilo é para um cliente dormir até a
+      // próxima coleta, e um agente não fica acordado esperando — ele pergunta quando
+      // perguntam a ele. `data_status` responde a mesma coisa quando a pergunta aparece.
+      return json({
+        ...itemPrices(market, ids, args.ofertas ?? 0),
+        ...(unresolved.length > 0
+          ? {
+              naoResolvidos: unresolved.map(({ ref, resolution }) => ({
+                item: ref,
+                motivo: resolutionProblem(ref, resolution),
+              })),
+            }
+          : {}),
+        freshness: freshness(market),
+      });
+    },
   );
 
   registerJsonTool<{ item: string | number; limit?: number }>(
@@ -335,7 +456,7 @@ export function registerTools(server: McpServer, db: DatabaseSync): void {
       }),
   );
 
-  registerJsonTool<Record<string, never>>(
+  registerJsonTool<{ coletas?: number }>(
     server,
     "data_status",
     {
@@ -345,7 +466,30 @@ export function registerTools(server: McpServer, db: DatabaseSync): void {
         "como se fosse o de agora — e sempre que a pessoa perguntar se o dado está atualizado.",
       inputSchema: SCHEMAS.status,
     },
-    (args, market) => json(serviceStatus(db, market, 10)),
+    (args, market) => json(serviceStatus(db, market, args.coletas ?? 10)),
+  );
+
+  registerJsonTool<Record<string, never>>(
+    server,
+    "market_ids",
+    {
+      title: "Todos os ids do mercado (resposta grande)",
+      description:
+        "Dois vetores de ids: `inMarket`, tudo que já passou pelo mercado, e `forSale`, o " +
+        "que tem anúncio ativo agora. Serve para cruzar com uma lista sua de itens — um " +
+        "catálogo, um inventário, uma lista de desejos — e descobrir de uma vez o que dá " +
+        "para comprar.\n\n" +
+        "⚠ São alguns milhares de números, e você paga todos em contexto. Antes de pedir, " +
+        "veja se a pergunta não é uma destas: para saber o que está à venda dentro de um " +
+        "assunto, `search_items` com `aVendaAgora`; para conferir itens que você já sabe " +
+        "quais são, `get_prices` — ele diz quem tem oferta e por quanto, na mesma chamada. " +
+        "Esta ferramenta só ganha quando a lista do outro lado é grande e você a tem inteira.",
+      inputSchema: SCHEMAS.marketIds,
+    },
+    // Sem `nextTradingAt`, como no `get_prices`: o campo é para um cliente dormir até a
+    // coleta seguinte, e o agente não fica esperando — `data_status` responde a mesma
+    // pergunta na hora em que ela é feita.
+    (args, market) => jsonCompact({ ...marketedIds(market), freshness: freshness(market) }),
   );
 
   // ---------------------------------------------------------------- replay

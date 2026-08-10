@@ -12,7 +12,7 @@
 
 import type { Server } from "./servers.js";
 import type { ItemRow } from "../store/read.js";
-import { getCache } from "../store/cache.js";
+import { type MarketCache, getCache } from "../store/cache.js";
 import { quantileIndex } from "../util/stats.js";
 import { normalizeName } from "../util/text.js";
 import { linksFor } from "./links.js";
@@ -39,6 +39,50 @@ export function toBrief(server: Server, itemId: number): ItemBrief | null {
     inMarket: item.inMarket,
     links: linksFor(item.itemId, item.name, server),
   };
+}
+
+/**
+ * Os dois conjuntos de ids que o mercado conhece, crus.
+ *
+ * Existe para quem tem catálogo próprio e só precisa saber, do lado de lá, quais dos
+ * SEUS itens o mercado já viu e quais estão à venda agora. Pela busca isso custaria
+ * dezenas de páginas de `limit=100` — e cada linha viria com preço, links e nome que
+ * ele não pediu. Aqui é uma passada no cache quente e alguns milhares de inteiros.
+ *
+ * São duas listas e não uma marca por item porque as perguntas são independentes: um
+ * item pode ter passado pelo mercado sem estar à venda, e o contrário também.
+ *
+ * Memoizado pelo objeto de cache, como o `movers.ts` faz pelo id do snapshot. O resultado
+ * só muda quando um crawl reconstrói o cache — de hora em hora — e sem o memo cada
+ * carregamento de página do catálogo de fora refaria a varredura dos 14 mil itens e as
+ * duas ordenações, síncronas, segurando o laço de eventos da API inteira. Chaveado pelo
+ * objeto, e não pelo `tradingSnapshotId`, porque `inMarket` vem do outro dataset: o
+ * `refreshCache` monta um objeto novo, então a identidade cobre os dois de uma vez.
+ */
+const idsMemo = new WeakMap<MarketCache, { inMarket: number[]; forSale: number[] }>();
+
+export function marketedIds(server: Server): { inMarket: number[]; forSale: number[] } {
+  const cache = getCache(server);
+  const hit = idsMemo.get(cache);
+  if (hit) return hit;
+
+  const inMarket: number[] = [];
+  for (const item of cache.items.values()) {
+    if (item.inMarket) inMarket.push(item.itemId);
+  }
+
+  // "Tem bucket de anúncios na coleta mais recente" é exatamente "está à venda agora" —
+  // o mesmo critério que o filtro `for_sale` da busca usa.
+  const forSale = [...cache.listings.keys()];
+
+  // Crescente nos dois: a ordem de um `Map` é a de inserção, e publicá-la faria a
+  // resposta mudar de forma a cada recoleta sem mudar de conteúdo.
+  const value = {
+    inMarket: inMarket.sort((a, b) => a - b),
+    forSale: forSale.sort((a, b) => a - b),
+  };
+  idsMemo.set(cache, value);
+  return value;
 }
 
 /**
@@ -357,4 +401,37 @@ export function resolveItem(server: Server, ref: string | number): Resolution {
   if (exact.length === 1) return { kind: "found", item: exact[0]! };
   if (items.length === 1) return { kind: "found", item: items[0]! };
   return { kind: "ambiguous", candidates: items };
+}
+
+/**
+ * O mesmo para uma lista, sem que uma referência ruim derrube as outras.
+ *
+ * `resolveItem` responde por uma pergunta só, e quem chama decide o que fazer com a
+ * dúvida — em lote essa decisão é sempre a mesma: separar o que resolveu do que não
+ * resolveu e seguir com o resto. Um nome ambíguo entre cem jogaria fora noventa e nove
+ * resoluções boas.
+ *
+ * Fica aqui, e não no canal que chamou, porque a regra é do domínio e não da apresentação:
+ * o dia em que `GET /api/v1/prices` aceitar nome, ele herda a mesma separação em vez de
+ * redescobri-la. Cada canal formata `unresolved` como quiser — texto para o agente, corpo
+ * de erro para o HTTP.
+ */
+export interface BatchResolution {
+  ids: number[];
+  unresolved: Array<{ ref: string | number; resolution: Exclude<Resolution, { kind: "found" }> }>;
+}
+
+export function resolveItems(server: Server, refs: Array<string | number>): BatchResolution {
+  const ids: number[] = [];
+  const unresolved: BatchResolution["unresolved"] = [];
+
+  for (const ref of refs) {
+    const resolution = resolveItem(server, ref);
+    if (resolution.kind === "found") ids.push(resolution.item.itemId);
+    else unresolved.push({ ref, resolution });
+  }
+
+  // Sem deduplicar: `itemPrices` já lê cada id uma vez só, e é lá que a regra pertence —
+  // dois nomes diferentes podem apontar para o mesmo item, e quem descobre isso é quem lê.
+  return { ids, unresolved };
 }

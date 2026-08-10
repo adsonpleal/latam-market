@@ -11,10 +11,23 @@ import { z } from "zod";
 
 import { DEFAULT_SERVER, SERVERS, type Server } from "../core/servers.js";
 
-export const json = (payload: unknown, isError = false) => ({
-  content: [{ type: "text" as const, text: JSON.stringify(payload, null, 1) }],
+const wrap = (text: string, isError = false) => ({
+  content: [{ type: "text" as const, text }],
   ...(isError ? { isError: true as const } : {}),
 });
+
+export const json = (payload: unknown, isError = false) =>
+  wrap(JSON.stringify(payload, null, 1), isError);
+
+/**
+ * Sem indentação, para payload que é uma lista longa de números.
+ *
+ * O `json` indenta com um espaço, o que para um punhado de objetos custa quase nada e
+ * deixa a resposta legível. Numa resposta de alguns milhares de inteiros, porém, o
+ * indentador põe uma quebra de linha antes de CADA um — o agente passa a pagar um token
+ * de formatação por id. É o caso do `market_ids`, e só dele.
+ */
+export const jsonCompact = (payload: unknown) => wrap(JSON.stringify(payload));
 
 export const fail = (error: unknown) =>
   json({ erro: error instanceof Error ? error.message : String(error) }, true);
@@ -37,7 +50,7 @@ export interface ToolConfig {
 /**
  * O argumento de servidor, acrescentado a TODA ferramenta aqui e não em cada schema.
  *
- * As dez ferramentas aceitam servidor sem exceção, então isto é uniforme, não caso
+ * Toda ferramenta daqui aceita servidor, então isto é uniforme, não caso
  * especial — e pendurá-lo em cada uma exigia repetir a entrada no schema e no tipo do
  * handler, que já tinham divergido: `data_status` declarava `Record<string, never>` e
  * lia `args.servidor` mesmo assim. Centralizado, esquecer deixa de ser possível.

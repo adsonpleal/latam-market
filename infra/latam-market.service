@@ -37,7 +37,9 @@ Environment=DATA_DIR=/opt/latam-market/data
 Environment=DB_PATH=/var/lib/latam-market/market.db
 Environment=PUBLIC_URL=https://mercado.latam-tools.com.br
 Environment=ALLOWED_HOSTS=mercado.latam-tools.com.br,localhost,127.0.0.1
-Environment=ALLOWED_ORIGINS=https://claude.ai,https://mercado.latam-tools.com.br
+# `visuais` é o simulador de visuais (repositório latamvisuais): o catálogo dele filtra
+# por "já visto no mercado" / "à venda agora" com `/api/v1/ids`, direto do navegador.
+Environment=ALLOWED_ORIGINS=https://claude.ai,https://mercado.latam-tools.com.br,https://visuais.latam-tools.com.br
 Environment=CRAWL_ENABLED=1
 
 # O cache do mercado inteiro é dezenas de MB; o teto de heap deixa uma coleta

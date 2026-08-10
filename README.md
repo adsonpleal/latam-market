@@ -89,6 +89,7 @@ curl -X POST --data-binary @replay.rrf \
 | `GET /api/v1/items/:item/history?days=30` | Série histórica |
 | `GET /api/v1/items/:item/appraise?price=N` | Avaliação de um preço |
 | `GET /api/v1/prices?items=501,1201` | Preço de vários itens numa chamada (só ids, no máximo 100) |
+| `GET /api/v1/ids` | Só os ids: `inMarket` (já visto) e `forSale` (à venda agora) |
 | `GET /api/v1/movers?days=7&dir=up` | Maiores variações |
 | `GET /api/v1/deals?min_discount=25` | Itens bem abaixo do usual |
 | `GET /api/v1/snapshots` | Coletas recentes |
@@ -103,6 +104,11 @@ o serviço não escolhe por você.
 leitura dos outros itens da lista. Ids que não existem voltam em `missing`, e
 `nextTradingAt` diz quando sai a próxima coleta — é o que deixa um cliente dormir até o
 dado novo chegar em vez de perguntar de minuto em minuto.
+
+`/ids` responde a mesma pergunta de graça para quem já tem catálogo próprio: dois vetores
+de ids, sem preço, sem paginação e com o mesmo `nextTradingAt`. É o que o
+[simulador de visuais](https://visuais.latam-tools.com.br) usa para marcar, entre os
+visuais do jogo, quais dá para comprar — pela busca seriam dezenas de páginas.
 
 ## Conectando o MCP
 
@@ -121,14 +127,16 @@ Em clientes com suporte a MCP remoto (Claude Desktop, Claude Code):
 
 | Ferramenta | Para quê |
 |---|---|
-| `search_items` | Achar o id de um item pelo nome |
+| `search_items` | Achar o id de um item pelo nome (ou vários de uma vez: `502,501`), com ordenação |
 | `get_price` | Quanto custa |
+| `get_prices` | Quanto custa uma lista de itens, numa chamada só |
 | `list_offers` | Quem está vendendo |
 | `price_history` | Como o preço se comportou |
 | `appraise_price` | Se um preço é bom |
 | `top_movers` | O que subiu ou caiu |
 | `find_deals` | Pechinchas |
 | `value_inventory` | Precificar um replay `.rrf` (envie em base64) |
+| `market_ids` | Todos os ids vistos e à venda, para cruzar com uma lista sua |
 | `data_status` | De quando são os dados |
 
 > Todas respondem a partir das coletas, que costumam ter menos de uma hora — `data_status`

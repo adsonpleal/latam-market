@@ -29,6 +29,8 @@ let baseUrl: string;
 let server: ReturnType<typeof createHttpServer>;
 
 const ITEM_ID = 501;
+/** Visto no mercado um dia, sem anúncio hoje: a diferença entre os dois filtros. */
+const SOLD_OUT = 909;
 
 function seed(): void {
   // O catálogo é do jogo; "visto no mercado" é por servidor (schema v3).
@@ -107,6 +109,23 @@ async function callTool(name: string, args: Record<string, unknown>): Promise<un
   return JSON.parse(body.result.content[0]!.text);
 }
 
+interface ToolInfo {
+  name: string;
+  description: string;
+  inputSchema: { properties: Record<string, { description?: string }> };
+}
+
+/** O catálogo de ferramentas que o MCP publica — nomes, descrições e schemas. */
+async function listTools(): Promise<ToolInfo[]> {
+  const res = await fetch(`${baseUrl}/mcp`, {
+    method: "POST",
+    headers: { "content-type": "application/json", accept: "application/json, text/event-stream" },
+    body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }),
+  });
+  const body = (await res.json()) as { result: { tools: ToolInfo[] } };
+  return body.result.tools;
+}
+
 const getJson = async (path: string): Promise<unknown> =>
   (await fetch(`${baseUrl}${path}`)).json();
 
@@ -157,6 +176,14 @@ describe("paridade entre API e MCP", () => {
     const [rest, mcp] = await Promise.all([
       getJson(`/api/v1/items/${ITEM_ID}/appraise?price=60`),
       callTool("appraise_price", { item: ITEM_ID, preco: 60 }),
+    ]);
+    expect(mcp).toEqual(rest);
+  });
+
+  it("data_status devolve o mesmo que GET /snapshots", async () => {
+    const [rest, mcp] = await Promise.all([
+      getJson("/api/v1/snapshots?limit=3"),
+      callTool("data_status", { coletas: 3 }),
     ]);
     expect(mcp).toEqual(rest);
   });
@@ -322,15 +349,7 @@ describe("replay pela API", () => {
  */
 describe("desvio do replay para a API", () => {
   it("a ferramenta aponta para a rota binária", async () => {
-    const res = await fetch(`${baseUrl}/mcp`, {
-      method: "POST",
-      headers: { "content-type": "application/json", accept: "application/json, text/event-stream" },
-      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }),
-    });
-    const body = (await res.json()) as {
-      result: { tools: Array<{ name: string; description: string }> };
-    };
-    const tool = body.result.tools.find((t) => t.name === "value_inventory")!;
+    const tool = (await listTools()).find((t) => t.name === "value_inventory")!;
     expect(tool.description).toContain("/api/v1/replay");
     expect(tool.description).toMatch(/tokens/i);
   });
@@ -413,8 +432,6 @@ describe("isolamento entre servidores", () => {
  * sem teste ela sumiria no dia em que alguém achasse que um implica o outro.
  */
 describe("filtro à venda agora", () => {
-  const SOLD_OUT = 909;
-
   beforeAll(() => {
     db.prepare(`INSERT INTO item (item_id, name, name_norm) VALUES (?, ?, ?)`).run(
       SOLD_OUT,
@@ -482,6 +499,40 @@ describe("preços em lote", () => {
 
     const { freshness: _ignorado, ...esperado } = sozinho;
     expect(lote.prices[0]).toEqual(esperado);
+  });
+
+  /**
+   * O lote existe nos dois canais, e responde a mesma coisa.
+   *
+   * Menos o `nextTradingAt`: ele serve para um cliente dormir até a próxima coleta, e o
+   * agente não fica acordado esperando. É a única diferença permitida entre os dois.
+   */
+  it("get_prices devolve o mesmo que GET /prices", async () => {
+    const [rest, mcp] = await Promise.all([
+      getJson(`/api/v1/prices?items=${ITEM_ID}&offers=5`),
+      callTool("get_prices", { itens: [ITEM_ID], ofertas: 5 }),
+    ]);
+    const { nextTradingAt: _semRelogio, ...esperado } = rest as Record<string, unknown>;
+    expect(mcp).toEqual(esperado);
+  });
+
+  /**
+   * Uma referência ruim no meio da lista não derruba as outras.
+   *
+   * O `get_price` sozinho pode lançar — a chamada era sobre aquele item e mais nada. No
+   * lote, lançar por causa de um nome errado jogaria fora as noventa e nove resoluções
+   * boas que vieram junto, e o agente pagaria a chamada inteira de novo.
+   */
+  it("aceita nome no lote e reporta o que não resolveu, sem perder o resto", async () => {
+    const r = (await callTool("get_prices", {
+      itens: ["pocao vermelha", "isso nao existe"],
+    })) as {
+      prices: { itemId: number }[];
+      naoResolvidos: { item: string; motivo: string }[];
+    };
+    expect(r.prices.map((p) => p.itemId)).toEqual([ITEM_ID]);
+    expect(r.naoResolvidos).toHaveLength(1);
+    expect(r.naoResolvidos[0]!.item).toBe("isso nao existe");
   });
 
   it("id desconhecido vai para 'missing' em vez de sumir", async () => {
@@ -628,6 +679,28 @@ describe("ordenação e lista de ids na busca", () => {
     expect(await idsOf("q=pocao&sort=price&dir=desc")).toEqual([CARA, ITEM_ID, SEM_OFERTA]);
   });
 
+  /**
+   * A ordem é a mesma nos dois canais.
+   *
+   * O MCP não devolve as colunas de preço — o agente pagaria contexto por números que não
+   * pediu — mas ORDENAR é outra coisa: sem isto, "quais são as poções mais baratas?" não
+   * tinha resposta pelo agente, porque reordenar a página que ele recebeu responderia "a
+   * mais barata destas vinte".
+   */
+  it("o MCP ordena igual ao REST, nos dois sentidos", async () => {
+    const idsMcp = async (args: Record<string, unknown>): Promise<number[]> =>
+      ((await callTool("search_items", { query: "pocao", ...args })) as {
+        itens: { itemId: number }[];
+      }).itens.map((i) => i.itemId);
+
+    expect(await idsMcp({ ordenar: "price" })).toEqual(await idsOf("q=pocao&sort=price"));
+
+    const invertido = await idsMcp({ ordenar: "price", decrescente: true });
+    expect(invertido).toEqual(await idsOf("q=pocao&sort=price&dir=desc"));
+    // E o item sem oferta não sobe ao topo quando inverte.
+    expect(invertido.at(-1)).toBe(SEM_OFERTA);
+  });
+
   it("ordenação desconhecida é 400 com a lista de válidas", async () => {
     const res = await fetch(`${baseUrl}/api/v1/items?q=pocao&sort=xpto`);
     expect(res.status).toBe(400);
@@ -654,6 +727,16 @@ describe("ordenação e lista de ids na busca", () => {
   });
 
   /**
+   * E o schema anuncia a forma — capacidade que ninguém documenta é capacidade que não
+   * existe. A lista funcionava desde sempre, mas o `describe` dizia "id exato", no
+   * singular, então nenhum agente tinha por que tentar.
+   */
+  it("o schema da busca conta que aceita lista de ids", async () => {
+    const busca = (await listTools()).find((t) => t.name === "search_items")!;
+    expect(busca.inputSchema.properties["query"]?.description).toMatch(/lista de ids/i);
+  });
+
+  /**
    * A busca do site vem com preço; a do agente, não.
    *
    * São dois consumidores com custos opostos: a tabela precisa das colunas para ordenar e
@@ -673,5 +756,74 @@ describe("ordenação e lista de ids na busca", () => {
       itens: Array<Record<string, unknown>>;
     };
     expect(mcp.itens[0]).not.toHaveProperty("offers");
+  });
+});
+
+/**
+ * Os dois conjuntos crus, para um catálogo de fora se filtrar sozinho.
+ *
+ * O simulador de visuais tem os 1.494 visuais do cliente e só quer saber quais o
+ * mercado já viu e quais estão à venda. Este teste roda no fim do arquivo de propósito:
+ * a essa altura o fixture já tem o esgotado (visto, sem anúncio) e o NIDHOGG semeado,
+ * que é justamente o que separa as duas listas uma da outra.
+ */
+describe("ids do mercado", () => {
+  const idsOfServer = async (
+    query = "",
+  ): Promise<{ inMarket: number[]; forSale: number[]; nextTradingAt: number | null }> =>
+    (await getJson(`/api/v1/ids${query}`)) as {
+      inMarket: number[];
+      forSale: number[];
+      nextTradingAt: number | null;
+    };
+
+  it("separa 'já visto' de 'à venda agora'", async () => {
+    const { inMarket, forSale } = await idsOfServer();
+    expect(inMarket).toContain(ITEM_ID);
+    expect(inMarket).toContain(SOLD_OUT);
+    expect(forSale).toContain(ITEM_ID);
+    // O esgotado é a diferença entre as duas perguntas: visto um dia, sem anúncio hoje.
+    expect(forSale).not.toContain(SOLD_OUT);
+  });
+
+  it("vem em ordem crescente, para não mudar de forma a cada coleta", async () => {
+    const { inMarket, forSale } = await idsOfServer();
+    expect(inMarket).toEqual([...inMarket].sort((a, b) => a - b));
+    expect(forSale).toEqual([...forSale].sort((a, b) => a - b));
+  });
+
+  it("cada servidor tem os seus", async () => {
+    const nidhogg = await idsOfServer("?server=NIDHOGG");
+    expect(nidhogg.forSale).toContain(ITEM_ID);
+    // `item_market` é por servidor: o esgotado só foi visto em FREYA.
+    expect(nidhogg.inMarket).not.toContain(SOLD_OUT);
+  });
+
+  it("concorda com o lote sobre quem está à venda", async () => {
+    const [ids, lote] = await Promise.all([
+      idsOfServer(),
+      getJson(`/api/v1/prices?items=${ITEM_ID},${SOLD_OUT}`) as Promise<{
+        prices: Array<{ itemId: number; inMarket: boolean; offers: unknown }>;
+        nextTradingAt: number | null;
+      }>,
+    ]);
+    for (const price of lote.prices) {
+      expect(ids.inMarket.includes(price.itemId)).toBe(price.inMarket);
+      expect(ids.forSale.includes(price.itemId)).toBe(price.offers !== null);
+    }
+    // O mesmo relógio das duas rotas — o cliente dorme até lá em vez de perguntar em
+    // intervalo fixo, e uma discordância aqui o faria acordar cedo ou tarde demais.
+    expect(ids.nextTradingAt).toBe(lote.nextTradingAt);
+  });
+
+  it("servidor inexistente é 400 aqui também", async () => {
+    const res = await fetch(`${baseUrl}/api/v1/ids?server=NIDOGG`);
+    expect(res.status).toBe(400);
+  });
+
+  it("market_ids devolve o mesmo que GET /ids", async () => {
+    const [rest, mcp] = await Promise.all([getJson("/api/v1/ids"), callTool("market_ids", {})]);
+    const { nextTradingAt: _semRelogio, ...esperado } = rest as Record<string, unknown>;
+    expect(mcp).toEqual(esperado);
   });
 });

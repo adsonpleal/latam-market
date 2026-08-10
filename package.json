@@ -1,6 +1,6 @@
 {
   "name": "latam-market",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "license": "MIT",
   "type": "module",
   "description": "API e servidor MCP para o mercado de jogadores do Ragnarok LATAM",

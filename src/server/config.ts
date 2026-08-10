@@ -38,7 +38,7 @@ export const config = {
   allowedHosts: list("ALLOWED_HOSTS", "mercado.latam-tools.com.br,localhost,127.0.0.1"),
   allowedOrigins: list(
     "ALLOWED_ORIGINS",
-    "https://claude.ai,https://mercado.latam-tools.com.br,http://localhost:5173",
+    "https://claude.ai,https://mercado.latam-tools.com.br,https://visuais.latam-tools.com.br,http://localhost:5173",
   ),
 
   limits: {
