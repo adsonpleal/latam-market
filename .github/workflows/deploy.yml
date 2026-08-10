@@ -126,7 +126,21 @@ jobs:
           # da interface — healthz, catálogo carregado, MCP e REST.
           bash infra/smoke.sh "$BASE"
 
-          ssh -i ~/.ssh/deploy.pem "ubuntu@$EC2_HOST" 'journalctl -u latam-market --no-pager -n 20'
+          # O journal ajuda a entender um deploy que passou mas subiu estranho. Só que
+          # ESTE LOG É PÚBLICO, e o journal desta unit não traz só as nossas linhas:
+          #
+          # linhas do componente de coleta, com endereços de rede e o IP da máquina; e
+          # linhas de `sudo`, com o caminho e os argumentos do que ele executa — essas caem
+          # aqui porque rodam no cgroup desta unit.
+          #
+          # Daí ser um ALLOWLIST dos prefixos que são deste serviço, e não um denylist do que
+          # esconder: um denylist dos prefixos do coletor deixaria passar exatamente aquelas
+          # linhas do sudo, que ninguém pensaria em listar. O que é nosso a gente conhece; o
+          # que o outro lado vai imprimir amanhã, não.
+          #
+          # Sai vazio quando o boot já rolou para fora da janela — daí o `|| true`.
+          ssh -i ~/.ssh/deploy.pem "ubuntu@$EC2_HOST" \
+            'journalctl -u latam-market --no-pager -n 40 | grep -E "\[(boot|crawl|retenção)\]" || true'
 
       # A referência é a última versão ANUNCIADA, não a do commit anterior.
       #
