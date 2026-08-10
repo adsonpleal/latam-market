@@ -1,0 +1,164 @@
+name: Deploy
+
+# Um deploy por push na main. O serviço é um bundle só, então não há motivo para
+# filtrar por caminho: qualquer mudança em src/, data/ ou infra/ muda o que roda.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: latam-market-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    # Necessária para empurrar a tag `anunciado-v*` que registra o que já foi
+    # publicado no Discord.
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Histórico e tags completos: o passo do anúncio compara a versão do
+          # package.json com a última tag `anunciado-v*`.
+          fetch-depth: 0
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - uses: actions/setup-node@v4
+        with:
+          # `node:sqlite` sem flag experimental e worker_threads estáveis.
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      # A suíte inclui a paridade entre API e MCP e o teste do parser contra um
+      # replay real. Se qualquer um quebrar, nada sobe.
+      - name: Testes
+        run: pnpm test
+
+      - name: Build
+        run: pnpm build
+
+      - name: Empacotar
+        run: |
+          mkdir -p stage/data
+          cp dist/server.mjs dist/*-worker.js stage/
+          cp -r infra stage/
+          cp data/latam-items.json stage/data/
+          # Sanidade antes de mandar: um tar sem o catálogo sobe, mas o serviço
+          # responde um mercado vazio, o que é pior que falhar aqui.
+          test -s stage/server.mjs
+          test -s stage/data/latam-items.json
+          tar -czf latam-market.tar.gz -C stage .
+          ls -lh latam-market.tar.gz
+
+      - name: Configurar SSH
+        env:
+          EC2_SSH_KEY: ${{ secrets.EC2_SSH_KEY }}
+          EC2_HOST: ${{ secrets.EC2_HOST }}
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "$EC2_SSH_KEY" > ~/.ssh/deploy.pem
+          chmod 600 ~/.ssh/deploy.pem
+          ssh-keyscan -H "$EC2_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Enviar e reiniciar
+        env:
+          EC2_HOST: ${{ secrets.EC2_HOST }}
+        run: |
+          scp -i ~/.ssh/deploy.pem latam-market.tar.gz "ubuntu@$EC2_HOST:~/"
+          ssh -i ~/.ssh/deploy.pem "ubuntu@$EC2_HOST" '
+            set -e
+            # Extrai num diretório de espera primeiro: um envio truncado nunca pode
+            # deixar /opt/latam-market com um bundle pela metade.
+            rm -rf ~/latam-market-next && mkdir -p ~/latam-market-next
+            tar -xzf ~/latam-market.tar.gz -C ~/latam-market-next
+            test -s ~/latam-market-next/server.mjs
+            test -s ~/latam-market-next/data/latam-items.json
+
+            # --delete limpa restos de builds antigos. O BANCO NÃO ESTÁ AQUI: ele mora
+            # em /var/lib/latam-market/market.db justamente por causa desta linha.
+            sudo rsync -a --delete ~/latam-market-next/ /opt/latam-market/
+            sudo chown -R ubuntu:ubuntu /opt/latam-market
+            chmod +x /opt/latam-market/infra/smoke.sh /opt/latam-market/infra/apply-caddy-fragment.sh
+            rm -rf ~/latam-market-next ~/latam-market.tar.gz
+
+            sudo systemctl restart latam-market
+          '
+
+      # O fragmento do Caddy é o único pedaço de infra que o rsync acima NÃO ativa: ele
+      # mora em /etc/caddy/conf.d/, fora de /opt. Era copiado à mão, e a janela entre o
+      # push e a cópia deixou a raiz em 404 na 0.3.0 — o serviço subiu com a interface
+      # nova e o Caddy continuou mandando `/` para o Node. A lógica vive no script (como
+      # a do smoke), não aqui, para poder ser lida e rodada à mão na máquina.
+      - name: Aplicar o fragmento do Caddy
+        env:
+          EC2_HOST: ${{ secrets.EC2_HOST }}
+        run: |
+          ssh -i ~/.ssh/deploy.pem "ubuntu@$EC2_HOST" \
+            '/opt/latam-market/infra/apply-caddy-fragment.sh'
+
+      - name: Verificar
+        env:
+          EC2_HOST: ${{ secrets.EC2_HOST }}
+        run: |
+          BASE=https://mercado.latam-tools.com.br
+
+          # O boot carrega o catálogo e monta o cache antes de escutar, então dar
+          # alguns segundos é esperado — não é sinal de problema.
+          for i in $(seq 1 15); do
+            code=$(curl -s -o /dev/null -w '%{http_code}' "$BASE/healthz" || true)
+            [ "$code" = "200" ] && break
+            echo "healthz -> $code, tentativa $i"; sleep 3
+          done
+          curl -sf "$BASE/healthz" | tee /dev/stderr >/dev/null
+
+          # As mesmas checagens que rodam depois de um reload do Caddy e a cada deploy
+          # da interface — healthz, catálogo carregado, MCP e REST.
+          bash infra/smoke.sh "$BASE"
+
+          ssh -i ~/.ssh/deploy.pem "ubuntu@$EC2_HOST" 'journalctl -u latam-market --no-pager -n 20'
+
+      # A referência é a última versão ANUNCIADA, não a do commit anterior.
+      #
+      # Comparar com o commit anterior faz um deploy que falhe entre o push e este
+      # passo engolir o anúncio para sempre: a `main` já avançou, então as execuções
+      # seguintes veem "versão igual" e pulam. Aconteceu com a 0.2.1. A tag só é criada
+      # depois de o post sair, então enquanto ela não existir o anúncio continua
+      # pendente e a próxima execução verde o publica.
+      - name: Detectar versão ainda não anunciada
+        id: ver
+        run: |
+          NEW=$(node -p "require('./package.json').version")
+          git fetch --tags --quiet || true
+          OLD=$(git tag -l 'anunciado-v*' --sort=-creatordate | head -1 | sed 's/^anunciado-v//')
+          echo "versão atual: $NEW / última anunciada: ${OLD:-<nenhuma>}"
+          echo "version=$NEW" >> "$GITHUB_OUTPUT"
+          if [ "$NEW" != "$OLD" ]; then echo "changed=true" >> "$GITHUB_OUTPUT"; else echo "changed=false" >> "$GITHUB_OUTPUT"; fi
+
+      - name: Publicar novidades no Discord
+        id: discord
+        if: steps.ver.outputs.changed == 'true'
+        # O deploy já deu certo neste ponto; falhar o job porque o Discord recusou
+        # seria trocar um aviso perdido por um vermelho enganoso. E como a tag só sai
+        # se este passo passar, um erro aqui apenas adia o anúncio.
+        continue-on-error: true
+        env:
+          DISCORD_BOT_TOKEN: ${{ secrets.DISCORD_BOT_TOKEN }}
+          DISCORD_CHANNEL_ID: ${{ vars.DISCORD_CHANNEL_ID }}
+        run: node tools/post-novidades.mjs
+
+      - name: Marcar a versão como anunciada
+        if: steps.discord.outcome == 'success'
+        run: |
+          git tag "anunciado-v${{ steps.ver.outputs.version }}"
+          git push origin "anunciado-v${{ steps.ver.outputs.version }}"

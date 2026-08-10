@@ -1,0 +1,14 @@
+# Tudo normalizado para LF no repositório.
+* text=auto eol=lf
+
+# Estes NÃO podem ganhar CRLF: são executados no Linux, e um `\r` no fim do shebang
+# faz o kernel procurar um interpretador chamado "bash\r" e falhar com uma mensagem
+# que não explica nada.
+*.sh        text eol=lf
+*.service   text eol=lf
+*.caddy     text eol=lf
+*.mjs       text eol=lf
+*.yml       text eol=lf
+
+# Binário: normalizar corromperia o replay (e o teste do parser quebraria).
+*.rrf       binary

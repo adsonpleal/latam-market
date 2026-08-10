@@ -1,0 +1,15 @@
+node_modules/
+dist/
+# NDJSON de backfill, lido por `pnpm import`. Não versionado: são centenas de MB.
+data/raw/
+data/*.db
+data/*.db-wal
+data/*.db-shm
+*.tsbuildinfo
+
+# Preferências locais do Claude Code, por máquina.
+.claude/settings.local.json
+
+# Gerados por web/scripts/build-catalogue.mjs a partir de data/latam-items.json.
+web/public/generated/
+web/src/generated/

@@ -1,0 +1,28 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "jsx": "react-jsx",
+    "types": ["node", "vite/client"],
+
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noFallthroughCasesInSwitch": true,
+
+    // O `web/` alcança o backend só por `import type` (ver src/api/types.ts). Com esta
+    // flag o apagamento é explícito no código, e não um efeito colateral do bundler —
+    // um `import` de valor vindo de `../src/` vira erro aqui, antes do Vite tentar
+    // empacotar `node:sqlite`. O teste em src/__tests__/layering.test.ts cobre o resto.
+    "verbatimModuleSyntax": true,
+    "isolatedModules": true,
+    "skipLibCheck": true,
+    "noEmit": true,
+    "allowImportingTsExtensions": true,
+    "resolveJsonModule": true
+  },
+  "include": ["src", "vite.config.ts", "vitest.config.ts"]
+}

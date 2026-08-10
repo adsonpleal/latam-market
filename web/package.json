@@ -1,0 +1,35 @@
+{
+  "name": "web",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Interface web do mercado do RO LATAM: sobe um .rrf e mostra o que ele vale",
+  "scripts": {
+    "catalogue": "node scripts/build-catalogue.mjs",
+    "predev": "node scripts/build-catalogue.mjs",
+    "dev": "vite",
+    "prebuild": "node scripts/build-catalogue.mjs",
+    "build": "tsc --noEmit && vite build",
+    "pretypecheck": "node scripts/build-catalogue.mjs",
+    "typecheck": "tsc --noEmit",
+    "pretest": "node scripts/build-catalogue.mjs",
+    "test": "vitest run",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@tanstack/react-table": "^8.21.3",
+    "react": "^19.1.1",
+    "react-dom": "^19.1.1",
+    "react-router-dom": "^7.9.3"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "@types/react": "^19.1.13",
+    "@types/react-dom": "^19.1.9",
+    "@vitejs/plugin-react": "^5.0.4",
+    "jsdom": "^26.1.0",
+    "typescript": "^5.7.2",
+    "vite": "^7.1.7",
+    "vitest": "^2.1.8"
+  }
+}
