@@ -89,8 +89,14 @@ jobs:
             # em /var/lib/latam-market/market.db justamente por causa desta linha.
             sudo rsync -a --delete ~/latam-market-next/ /opt/latam-market/
             sudo chown -R ubuntu:ubuntu /opt/latam-market
-            chmod +x /opt/latam-market/infra/smoke.sh /opt/latam-market/infra/apply-caddy-fragment.sh
+            chmod +x /opt/latam-market/infra/smoke.sh /opt/latam-market/infra/apply-caddy-fragment.sh \
+              /opt/latam-market/infra/apply-unit.sh
             rm -rf ~/latam-market-next ~/latam-market.tar.gz
+
+            # A unit vive em /etc/systemd/system/, fora do alcance do rsync acima, então
+            # uma mudança em `Environment=` (uma origem nova na allowlist, digamos) subia
+            # o código novo com o ambiente antigo. No-op quando a unit não mudou.
+            /opt/latam-market/infra/apply-unit.sh
 
             sudo systemctl restart latam-market
           '
