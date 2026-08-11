@@ -5,13 +5,22 @@ Mais recente primeiro. A seção do topo é a fonte do post de novidades no Disc
 
 ## 0.7.1 — 2026-08-11
 
-- **Os nomes dos itens passaram a vir direto do cliente do jogo.** O que você consulta hoje
-  continua igual — os mesmos itens, os mesmos nomes e as mesmas descrições. O que mudou é
-  de onde eles saem: até aqui eram uma cópia trazida à mão de outro projeto, que só
-  envelhecia quando ninguém lembrava de atualizar. Agora vêm de uma extração do próprio
-  cliente, publicada num lugar só e sempre na versão que está no ar.
-  - Na prática: depois de uma atualização do jogo, item novo e nome traduzido chegam aqui
-    por um comando. Antes disso dependia de a cópia ter passado por duas mãos.
+- **O catálogo pegou a atualização de agosto: são 85 itens novos para consultar.** Entre
+  eles os Elmos da Fé das classes mais recentes, as 15 cartas da Arena, os equipamentos das
+  masmorras de Geffen e do Dirigível, os pacotes de agosto e o Artefato Oval das Flores. O
+  catálogo estava parado em 23/07: quem procurasse por qualquer um desses não achava nada, e
+  agora acha.
+  - Outros 36 itens tiveram nome ou descrição corrigidos no jogo, e a correção veio junto. A
+    **Lança Espectral**, cuja descrição ainda saía em espanhol, agora está em português; o
+    **Esboço do Cetro** deixou de se chamar Esboço de Varinha; e quatro pergaminhos Adulter
+    Fides que estavam com os nomes trocados entre si (Shuriken com Huuma, Cauda de Gato com
+    Rabo-de-Gato) voltaram ao lugar.
+- **E atualizar isso virou um comando só.** Os nomes dos itens agora vêm direto de uma
+  extração do cliente do jogo, publicada num lugar só e sempre na versão que está no ar. Até
+  aqui eram uma cópia trazida à mão de outro projeto, que só envelhecia quando ninguém
+  lembrava de atualizar — foi por isso que o catálogo ficou três semanas para trás sem
+  ninguém notar. Da próxima atualização do jogo em diante, item novo e nome corrigido chegam
+  aqui no mesmo dia.
 
 ## 0.7.0 — 2026-08-10
 
