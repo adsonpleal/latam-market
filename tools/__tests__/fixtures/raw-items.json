@@ -1,0 +1,57 @@
+[
+  {
+    "id": 501,
+    "name": "Poção Vermelha",
+    "slots": 0,
+    "aegisName": null,
+    "resourceName": "빨간포션",
+    "description": "Poção feita de ervas vermelhas.",
+    "view": 0,
+    "equipSlots": [],
+    "costume": false
+  },
+  {
+    "id": 1101,
+    "name": "Espada",
+    "slots": 3,
+    "aegisName": "Sword",
+    "resourceName": "검",
+    "description": "Uma espada comum.",
+    "view": 2,
+    "equipSlots": ["Right_Hand"],
+    "costume": false
+  },
+  {
+    "id": 2199,
+    "name": "Escudo sem Descrição",
+    "slots": 0,
+    "aegisName": "Shield_Blank",
+    "resourceName": "방패",
+    "description": "",
+    "view": 0,
+    "equipSlots": ["Left_Hand"],
+    "costume": false
+  },
+  {
+    "id": 3000,
+    "name": null,
+    "slots": 4,
+    "aegisName": "Reservado",
+    "resourceName": "예약",
+    "description": "Item que o cliente reserva e não usa.",
+    "view": 0,
+    "equipSlots": [],
+    "costume": false
+  },
+  {
+    "id": 4001,
+    "name": "Carta sem Aegis",
+    "slots": 0,
+    "aegisName": null,
+    "resourceName": null,
+    "description": "Nem itemmoveinfo nem recurso nomeiam esta.",
+    "view": 0,
+    "equipSlots": [],
+    "costume": false
+  }
+]

@@ -47,7 +47,7 @@ const genDir = join(webRoot, "src", "generated");
 
 if (!existsSync(source)) {
   console.error(`catálogo não encontrado em ${source}`);
-  console.error("rode `pnpm sync:items` na raiz para trazê-lo do projeto irmão.");
+  console.error("rode `pnpm sync:items` na raiz para trazê-lo do ragassets.");
   process.exit(1);
 }
 
