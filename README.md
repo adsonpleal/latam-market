@@ -212,7 +212,7 @@ Sem nenhum dos dois o serviço sobe com o mercado vazio — funciona, só não r
 | `pnpm test` | Testes |
 | `pnpm typecheck` | Tipos |
 | `pnpm build` | Bundle de produção em `dist/` |
-| `pnpm sync:items` | Atualiza o catálogo a partir do latam-ro-calc |
+| `pnpm sync:items` | Atualiza o catálogo a partir do ragassets |
 
 Variáveis úteis: `PORT`, `DB_PATH`, `DATA_DIR`, `COLLECTOR_PATH`, `CRAWL_ENABLED`,
 `ALLOWED_HOSTS`, `ALLOWED_ORIGINS` (veja `src/server/config.ts`).
@@ -280,10 +280,11 @@ necessário documentado no topo de cada um.
 
 ## Créditos
 
-Catálogo de itens em pt-BR do projeto irmão
-[latam-ro-calc](https://github.com/adsonpleal/latam-ro-calc) (simulador de dano). A leitura
-de `.rrf` é portada de lá, que por sua vez segue o
-[Rrf-Parser do Tokeiburu](https://github.com/Tokeiburu).
+Catálogo de itens em pt-BR extraído do cliente do jogo pelo
+[ragassets](https://github.com/adsonpleal/ragassets), que publica as tabelas do cliente em
+`assets.latam-tools.com.br/raw/`. A leitura de `.rrf` é portada do projeto irmão
+[latam-ro-calc](https://github.com/adsonpleal/latam-ro-calc) (simulador de dano), que por
+sua vez segue o [Rrf-Parser do Tokeiburu](https://github.com/Tokeiburu).
 
 Projeto não-oficial, feito para a comunidade. Sem vínculo com a Gravity ou a Gnjoy.
 

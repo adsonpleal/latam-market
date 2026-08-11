@@ -3,6 +3,16 @@
 Mais recente primeiro. A seção do topo é a fonte do post de novidades no Discord
 (`tools/post-novidades.mjs`), então escreva pensando em quem vai ler lá.
 
+## 0.7.1 — 2026-08-11
+
+- **Os nomes dos itens passaram a vir direto do cliente do jogo.** O que você consulta hoje
+  continua igual — os mesmos itens, os mesmos nomes e as mesmas descrições. O que mudou é
+  de onde eles saem: até aqui eram uma cópia trazida à mão de outro projeto, que só
+  envelhecia quando ninguém lembrava de atualizar. Agora vêm de uma extração do próprio
+  cliente, publicada num lugar só e sempre na versão que está no ar.
+  - Na prática: depois de uma atualização do jogo, item novo e nome traduzido chegam aqui
+    por um comando. Antes disso dependia de a cópia ter passado por duas mãos.
+
 ## 0.7.0 — 2026-08-10
 
 - **Novidade: o simulador de visuais agora sabe o que dá para comprar.** O catálogo de lá

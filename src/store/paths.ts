@@ -25,10 +25,10 @@ import type { Server } from "../core/servers.js";
 export const DATA_DIR = resolve(process.env["DATA_DIR"] ?? "data");
 
 /**
- * Catálogo de itens em pt-BR, originalmente produzido pelo projeto irmão latam-ro-calc.
+ * Catálogo de itens em pt-BR, extraído do cliente do jogo pelo ragassets.
  *
- * Vive em `data/` em vez de ser lido do checkout vizinho: o servidor sobe como um bundle
- * único no EC2, onde projeto irmão nenhum existe. Atualize com `pnpm sync:items`.
+ * Vive em `data/` em vez de ser buscado na rede: o servidor sobe como um bundle único no
+ * EC2 e carrega o catálogo antes de escutar. Atualize com `pnpm sync:items`.
  */
 export const LATAM_ITEMS_PATH = resolve(DATA_DIR, "latam-items.json");
 
