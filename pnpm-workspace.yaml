@@ -13,3 +13,11 @@ packages:
 # check that runs before the script itself.
 allowBuilds:
   esbuild: true
+
+# O pnpm segura pacotes publicados há pouco tempo, como defesa contra um pacote
+# comprometido que acabou de subir. O rrfparser é nosso e foi publicado agora, então
+# sem esta exceção o `pnpm install --frozen-lockfile` do deploy se recusa a instalar.
+# A exceção é presa à versão de propósito: ao subir para a 1.0.0 esta linha sai (ou
+# vira a nova versão), em vez de virar um passe livre permanente para o pacote.
+minimumReleaseAgeExclude:
+  - rrfparser@1.0.0-rc.1
