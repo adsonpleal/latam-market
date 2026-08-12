@@ -1,6 +1,6 @@
 {
   "name": "latam-market",
-  "version": "0.7.1",
+  "version": "0.8.0",
   "license": "MIT",
   "type": "module",
   "description": "API e servidor MCP para o mercado de jogadores do Ragnarok LATAM",
@@ -19,7 +19,8 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
-    "zod": "^4.4.3"
+    "zod": "^4.4.3",
+    "rrfparser": "^1.0.0-rc.1"
   },
   "devDependencies": {
     "@types/node": "^22.10.2",

@@ -8,8 +8,8 @@
  */
 
 import type { Server } from "./servers.js";
-import { decodeReplay } from "../replay/rrf/decode.js";
-import type { ItemRecord } from "../replay/rrf/items.js";
+import { decodeReplay } from "../replay/decode.js";
+import type { ItemRecord } from "../replay/decode.js";
 import { toBrief } from "./items.js";
 import { cheapestOffers, freshness, marketAggregate, offerSummary } from "./prices.js";
 import type { Freshness, ItemBrief, MarketAggregate } from "./types.js";
