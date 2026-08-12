@@ -9,7 +9,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 
-import { decodeReplay } from "../rrf/decode.js";
+import { decodeReplay } from "../decode.js";
 
 function loadFixture(name: string): ArrayBuffer {
   const buf = readFileSync(resolve(import.meta.dirname, "fixtures", name));

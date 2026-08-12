@@ -3,6 +3,20 @@
 Mais recente primeiro. A seção do topo é a fonte do post de novidades no Discord
 (`tools/post-novidades.mjs`), então escreva pensando em quem vai ler lá.
 
+## 0.8.0 — 2026-08-12
+
+- **O leitor de replay daqui virou um projeto à parte, e agora conserta os outros.** Ler um
+  arquivo `.rrf` era código copiado em três lugares — aqui, no simulador de dano e no
+  RagnaRecap — e cada cópia foi seguindo seu caminho. Agora é uma biblioteca só, o
+  [rrfparser](https://github.com/adsonpleal/rrfparser), e a versão que virou padrão foi a
+  daqui: era a única que separava direito mochila, carrinho e equipamento. As outras duas
+  juntavam tudo numa lista só e, como a numeração de posições de cada container começa do
+  zero, um item do carrinho podia tomar o lugar de um da mochila. A correção chega agora aos
+  três de uma vez.
+  - Para quem usa a valoração de inventário daqui, **nada muda**: a conta já estava certa e o
+    resultado é o mesmo item por item. A troca foi conferida decodificando 566 gravações
+    reais com o leitor antigo e o novo lado a lado, exigindo saída idêntica nos dois.
+
 ## 0.7.1 — 2026-08-11
 
 - **O catálogo pegou a atualização de agosto: são 85 itens novos para consultar.** Entre

@@ -11,6 +11,9 @@ importers:
       '@modelcontextprotocol/sdk':
         specifier: ^1.29.0
         version: 1.30.0(zod@4.4.3)
+      rrfparser:
+        specifier: ^1.0.0-rc.1
+        version: 1.0.0-rc.1
       zod:
         specifier: ^4.4.3
         version: 4.4.3
@@ -1237,6 +1240,10 @@ packages:
   router@2.2.0:
     resolution: {integrity: sha512-nLTrUKm2UyiL7rlhapu/Zl45FwNgkZGaCpZbIHajDYgwlJCOzLSk+cIPAnsEqV955GjILJnKbdQC1nVPz+gAYQ==}
     engines: {node: '>= 18'}
+
+  rrfparser@1.0.0-rc.1:
+    resolution: {integrity: sha512-7S37PslgY+uPZEPVhbBawvsl12N9jM8uBFm2sx6PJKOAqYkzRdYwRhOaXDELxanGY+kZ7Fwqc6b2yoTMXMfTMQ==}
+    engines: {node: '>=18'}
 
   rrweb-cssom@0.8.0:
     resolution: {integrity: sha512-guoltQEx+9aMf2gDZ0s62EcV8lsXR+0w8915TC3ITdn2YueuNjdAYh/levpU9nFaoChh9RUS5ZdQMrKfVEN9tw==}
@@ -2612,6 +2619,8 @@ snapshots:
       path-to-regexp: 8.4.2
     transitivePeerDependencies:
       - supports-color
+
+  rrfparser@1.0.0-rc.1: {}
 
   rrweb-cssom@0.8.0: {}
 
