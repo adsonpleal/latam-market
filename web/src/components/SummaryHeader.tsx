@@ -16,7 +16,7 @@ export function SummaryHeader({
   filteredCount,
   filteredUnpriced,
 }: Props) {
-  const { character, inventory, cart, equipped } = valuation;
+  const { character, inventory, cart, equipped, storage, guildStorage } = valuation;
 
   return (
     <header className="summary">
@@ -36,6 +36,24 @@ export function SummaryHeader({
         <Figure label="Mochila" value={zeny(inventory.value)} hint={`${inventory.items.length} itens`} />
         <Figure label="Carrinho" value={zeny(cart.value)} hint={`${cart.items.length} itens`} />
         <Figure label="Equipado" value={zeny(equipped.value)} hint={`${equipped.items.length} itens`} />
+        {/* Só aparecem quando a janela foi aberta na gravação. Uma cifra "0z" para quem
+            não passou no Kafra leria como "seu armazém está vazio", que é outra coisa —
+            a nota do backend explica a ausência. O `hint` mostra a capacidade porque é
+            o que responde "cabe mais?", a pergunta que se faz olhando um armazém. */}
+        {storage && (
+          <Figure
+            label="Armazém"
+            value={zeny(storage.value)}
+            hint={`${storage.items.length} de ${storage.maxSlots} slots`}
+          />
+        )}
+        {guildStorage && (
+          <Figure
+            label="Armazém do clã"
+            value={zeny(guildStorage.value)}
+            hint={`${guildStorage.items.length} de ${guildStorage.maxSlots} slots`}
+          />
+        )}
       </div>
 
       <FreshnessBadge freshness={valuation.freshness} />

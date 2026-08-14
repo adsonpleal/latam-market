@@ -9,6 +9,7 @@
 
 import type { SellCandidate } from "../api/types.js";
 import { zeny } from "../lib/format.js";
+import { ORIGIN_LABEL } from "../lib/rows.js";
 import { ItemCell } from "./ItemCell.js";
 
 interface Props {
@@ -24,11 +25,15 @@ export function SellCandidates({ candidates, descriptions, onSelect }: Props) {
     <section className="candidates">
       <h3>O que vale a pena vender</h3>
       <p className="lead-small">
-        Acima de 10.000z e com no máximo 15 lojas concorrendo. Equipados não entram.
+        Acima de 10.000z e com no máximo 15 lojas concorrendo. Inclui o que está guardado
+        no armazém; equipados não entram.
       </p>
       <ul>
+        {/* A origem entra na chave porque a lista mistura containers e o slot é contado
+            dentro de cada um: o mesmo item na mochila e no armazém pode cair no mesmo
+            número, e aí duas linhas legítimas dividiriam a chave. */}
         {candidates.map((candidate) => (
-          <li key={`${candidate.item.itemId}-${candidate.slot}`}>
+          <li key={`${candidate.origin}-${candidate.item.itemId}-${candidate.slot}`}>
             <ItemCell
               item={candidate.item}
               refine={candidate.refine}
@@ -36,6 +41,9 @@ export function SellCandidates({ candidates, descriptions, onSelect }: Props) {
               onSelect={onSelect}
             />
             <span className="candidate-value">{zeny(candidate.total)}</span>
+            {/* Onde o item está. Sem isto a sugestão não é acionável — e a do armazém do
+                clã não avisaria que o item é compartilhado. */}
+            <span className="candidate-origin">{ORIGIN_LABEL[candidate.origin]}</span>
             <span className="candidate-reason">{candidate.reason}</span>
           </li>
         ))}

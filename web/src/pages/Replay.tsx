@@ -24,9 +24,14 @@ import { useMoverChanges } from "../state/useMovers.js";
 import type { ReplayController } from "../state/useReplay.js";
 
 const DEFAULT_FILTERS: Filters = {
-  // "unidentified" fica de fora por padrão pelo mesmo motivo que o backend o mantém
-  // fora do total: são containers cujo significado ainda não foi identificado.
-  origins: new Set<Origin>(["inventory", "cart", "equipped"]),
+  // Ligadas por padrão são exatamente as origens que o backend soma em `totalValue` — é o
+  // que faz "Selecionado" e "Total do replay" começarem iguais.
+  //
+  // Derivado em vez de listado à mão: `ALL_ORIGINS` menos `unidentified` É o conjunto que
+  // o backend conta, porque `Origin` é `ItemOrigin | "unidentified"` e `ItemOrigin` é a
+  // lista que entra no total. Um container novo no backend entra aqui sozinho; escrito à
+  // mão, as duas cifras começariam diferentes e ninguém saberia por quê.
+  origins: new Set<Origin>(ALL_ORIGINS.filter((o) => o !== "unidentified")),
   hideUntradable: true,
   search: "",
 };

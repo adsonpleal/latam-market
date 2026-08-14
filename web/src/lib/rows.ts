@@ -1,13 +1,24 @@
 /** A avaliação vem em containers; a tabela quer uma lista só, com a origem marcada. */
 
-import type { ReplayResponse, ValuedItem } from "../api/types.js";
+import type { ItemOrigin, ReplayResponse, ValuedItem } from "../api/types.js";
 
-export type Origin = "inventory" | "cart" | "equipped" | "unidentified";
+/**
+ * As origens do backend mais a que só existe aqui.
+ *
+ * `ItemOrigin` vem de `core/replay.ts` em vez de ser reescrita: é a mesma lista que
+ * `sellCandidates` carimba em cada item, e uma cópia à mão erraria calada — um container
+ * novo lá viraria um erro de tipo em `ORIGIN_LABEL[candidate.origin]`, longe da tabela de
+ * rótulos que é o que de fato precisa da entrada nova. `unidentified` fica de fora de
+ * `ItemOrigin` de propósito: nada ali é candidato a venda, então o backend não a inclui.
+ */
+export type Origin = ItemOrigin | "unidentified";
 
 export const ORIGIN_LABEL: Record<Origin, string> = {
   inventory: "Mochila",
   cart: "Carrinho",
   equipped: "Equipado",
+  storage: "Armazém",
+  guildStorage: "Armazém do clã",
   unidentified: "Não identificado",
 };
 
@@ -35,9 +46,13 @@ export function flatten(valuation: ReplayResponse): Row[] {
   add(valuation.inventory.items, "inventory");
   add(valuation.cart.items, "cart");
   add(valuation.equipped.items, "equipped");
-  // Containers que o decodificador ainda não sabe o que são (provavelmente armazém).
-  // Aparecem porque a pessoa tem os itens, mas o backend os deixa fora do total e a
-  // interface segue essa regra: só entram se a origem for escolhida.
+  // Os armazéns são `null` quando a janela não foi aberta na gravação — aí não há linha
+  // para mostrar, o que é diferente de mostrar um armazém vazio.
+  add(valuation.storage?.items ?? [], "storage");
+  add(valuation.guildStorage?.items ?? [], "guildStorage");
+  // Containers que o decodificador ainda não sabe o que são. Aparecem porque a pessoa tem
+  // os itens, mas o backend os deixa fora do total e a interface segue essa regra: só
+  // entram se a origem for escolhida.
   for (const [chunkId, items] of Object.entries(valuation.unidentified)) {
     add(items, "unidentified", Number(chunkId));
   }

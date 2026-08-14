@@ -12,8 +12,8 @@ importers:
         specifier: ^1.29.0
         version: 1.30.0(zod@4.4.3)
       rrfparser:
-        specifier: ^1.0.0-rc.1
-        version: 1.0.0-rc.1
+        specifier: ^1.1.0
+        version: 1.1.0
       zod:
         specifier: ^4.4.3
         version: 4.4.3
@@ -1241,8 +1241,8 @@ packages:
     resolution: {integrity: sha512-nLTrUKm2UyiL7rlhapu/Zl45FwNgkZGaCpZbIHajDYgwlJCOzLSk+cIPAnsEqV955GjILJnKbdQC1nVPz+gAYQ==}
     engines: {node: '>= 18'}
 
-  rrfparser@1.0.0-rc.1:
-    resolution: {integrity: sha512-7S37PslgY+uPZEPVhbBawvsl12N9jM8uBFm2sx6PJKOAqYkzRdYwRhOaXDELxanGY+kZ7Fwqc6b2yoTMXMfTMQ==}
+  rrfparser@1.1.0:
+    resolution: {integrity: sha512-wDt0GpvshnXb7spwnKurA9aI/ECsbTrz1tGesxWQtq+42fRcXtnVedhdgkHIq97y3XvYk/zM9K0jYfbvACa0JQ==}
     engines: {node: '>=18'}
 
   rrweb-cssom@0.8.0:
@@ -2620,7 +2620,7 @@ snapshots:
     transitivePeerDependencies:
       - supports-color
 
-  rrfparser@1.0.0-rc.1: {}
+  rrfparser@1.1.0: {}
 
   rrweb-cssom@0.8.0: {}
 

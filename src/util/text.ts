@@ -42,3 +42,16 @@ export function stripSlotSuffix(name: string): string {
  */
 export const plural = (n: number, um: string, muitos: string): string =>
   `${n.toLocaleString("pt-BR")} ${n === 1 ? um : muitos}`;
+
+/**
+ * Junta uma lista em prosa: vírgula entre os itens e "e" antes do último.
+ *
+ * Existe porque um `join(" e ")` só passa por português enquanto a lista tem dois itens.
+ * O aviso de preço de `core/replay.ts` chega a quatro — refino, grau, cartas e bônus
+ * aleatórios — e saía como "refino +11 e grau C e 2 cartas e 2 bônus", que ninguém
+ * escreveria.
+ */
+export function enumerate(items: string[]): string {
+  if (items.length <= 1) return items[0] ?? "";
+  return `${items.slice(0, -1).join(", ")} e ${items[items.length - 1]}`;
+}

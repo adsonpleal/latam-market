@@ -3,6 +3,38 @@
 Mais recente primeiro. A seção do topo é a fonte do post de novidades no Discord
 (`tools/post-novidades.mjs`), então escreva pensando em quem vai ler lá.
 
+## 0.9.0 — 2026-08-14
+
+- **O armazém entrou na conta.** Até agora "quanto vale tudo que eu tenho?" respondia só
+  pela mochila, pelo carrinho e pelo que estava vestido — e para muita gente é justamente
+  no armazém do Kafra que mora a parte valiosa, guardada ali para vender depois. Agora o
+  armazém do Kafra e o do clã aparecem item por item, com preço, e entram no total.
+  - **Tem um jeito de gravar:** abra a janela do armazém durante a gravação do replay. O
+    conteúdo do armazém não está dentro do arquivo `.rrf` — o servidor manda a lista no
+    instante em que a janela abre, então um replay gravado sem passar no Kafra não tem como
+    saber o que há lá. Quando isso acontece, a resposta diz que o armazém não foi aberto,
+    em vez de mostrar um armazém vazio que não é verdade.
+  - As sugestões de "o que vale a pena vender" agora incluem o que está guardado, e cada
+    sugestão diz **de onde** o item é: mochila, carrinho, armazém ou armazém do clã. Sem
+    isso a lista mandava vender um item sem dizer onde ele estava.
+  - **Cuidado com o do clã:** ele é compartilhado. Os itens dele entram na conta e nas
+    sugestões, e a resposta avisa que não são só seus.
+  - Se a listagem do armazém chegar partida e faltar pedaço, a resposta avisa que o valor
+    dele está por baixo, em vez de apresentar uma soma incompleta como se estivesse fechada
+    — o servidor manda a própria contagem de pilhas, e ela é conferida contra o que chegou.
+  - Como o armazém entra no total, **o total de dois replays só é comparável se os dois
+    tiverem passado no Kafra** — o mesmo personagem gravando sem abrir o armazém aparece
+    valendo menos sem ter perdido nada.
+- **Itens com grau de encantamento agora avisam.** O aviso de "este preço é do item base"
+  já saía para refino e cartas; o grau (`[D]`, `[C]`, `[B]`, `[A]`) faltava, e um item de
+  grau A saía com o preço do item sem grau, calado.
+- Por dentro: o `rrfparser` subiu para a 1.1.0, que é de onde vem a leitura dos armazéns.
+  Ler os armazéns custa decodificar o fluxo de pacotes do replay, e não só os contêineres
+  do arquivo — o servidor ficou 23 KB maior e cada replay leva 0,4 ms a mais para ser lido.
+- Some daqui uma suspeita antiga: aqueles containers de item "não identificados" que o
+  replay traz **não** são o armazém, como se achava. Uma gravação feita com as duas janelas
+  abertas mostra que eles vêm vazios do mesmo jeito.
+
 ## 0.8.0 — 2026-08-12
 
 - **O leitor de replay daqui virou um projeto à parte, e agora conserta os outros.** Ler um

@@ -31,6 +31,18 @@ let server: ReturnType<typeof createHttpServer>;
 const ITEM_ID = 501;
 /** Visto no mercado um dia, sem anúncio hoje: a diferença entre os dois filtros. */
 const SOLD_OUT = 909;
+/**
+ * Dois itens que só existem no armazém do `storage-test.rrf` — 11568 no do Kafra (100
+ * unidades), 12580 no do clã (140).
+ *
+ * Precisam de anúncio para que "item guardado pode ser candidato a venda" tenha o que
+ * provar: sem preço, o filtro de valor mínimo derruba o armazém inteiro e o teste passaria
+ * por não ter testado nada. Entram no MESMO snapshot de `trading` que o `ITEM_ID` — cada
+ * snapshot é o retrato completo do que está à venda agora, então um segundo snapshot não
+ * acrescentaria, substituiria.
+ */
+const KAFRA_ITEM = 11568;
+const CLAN_ITEM = 12580;
 
 function seed(): void {
   // O catálogo é do jogo; "visto no mercado" é por servidor (schema v3).
@@ -54,10 +66,8 @@ function seed(): void {
   finishSnapshot(db, market.id, "market-price");
 
   const trading = beginSnapshot(db, "trading", "FREYA", "import", 1_700_000_100);
-  writeRows(
-    db,
-    trading,
-    [50, 55, 70, 90].map(
+  writeRows(db, trading, [
+    ...[50, 55, 70, 90].map(
       (price, i) =>
         ({
           itemId: ITEM_ID, mapId: 1, ssi: `ssi-${i}`, itemName: "Poção Vermelha",
@@ -66,7 +76,18 @@ function seed(): void {
           storeTypeName: "BUY", itemSellerCharName: `Vendedor${i}`,
         }) satisfies TradingRow,
     ),
-  );
+    ...[KAFRA_ITEM, CLAN_ITEM].flatMap((itemId) =>
+      [500, 550].map(
+        (price, i) =>
+          ({
+            itemId, mapId: 1, ssi: `arm-${itemId}-${i}`, itemName: `Item ${itemId}`,
+            databaseImgPath: null, databaseType: "etc",
+            storeName: `Loja A${i}`, itemPrice: price, itemCnt: 20, slotMaxCount: "",
+            storeTypeName: "BUY", itemSellerCharName: `VendedorA${i}`,
+          }) satisfies TradingRow,
+      ),
+    ),
+  ]);
   rollupListings(db, trading);
   transact(db, () => finishSnapshot(db, trading.id, "trading"));
   refreshCache(db, "FREYA");
@@ -339,6 +360,99 @@ describe("replay pela API", () => {
       body: Buffer.alloc(200, 7),
     });
     expect(res.status).toBe(422);
+  });
+});
+
+/**
+ * Os armazéns atravessam as DUAS superfícies, ou não valem nada.
+ *
+ * `decode.test.ts` prova que eles saem do arquivo; isto prova que chegam a quem pergunta.
+ * É o mesmo furo do teste de `slot`/`units` acima — um campo que some entre o core e o
+ * JSON não quebra nada, só faz o armazém desaparecer sem aviso, e a interface (as duas
+ * cifras novas do cabeçalho) e o agente montam em cima deles.
+ */
+describe("armazém pela API e pelo MCP", () => {
+  const fixture = (): Buffer =>
+    readFileSync(resolve(import.meta.dirname, "../replay/__tests__/fixtures/storage-test.rrf"));
+
+  interface StorageBody {
+    storage: { items: unknown[]; value: number; usedSlots: number; maxSlots: number } | null;
+    guildStorage: { items: unknown[]; value: number; maxSlots: number } | null;
+    totalValue: number;
+    inventory: { value: number };
+    cart: { value: number };
+    equipped: { value: number };
+  }
+
+  async function viaApi(): Promise<StorageBody & { sellCandidates: { origin: string }[] }> {
+    const res = await fetch(`${baseUrl}/api/v1/replay`, {
+      method: "POST",
+      headers: { "content-type": "application/octet-stream" },
+      body: fixture(),
+    });
+    expect(res.status).toBe(200);
+    return (await res.json()) as StorageBody & { sellCandidates: { origin: string }[] };
+  }
+
+  it("a API devolve os dois armazéns com a ocupação do servidor", async () => {
+    const body = await viaApi();
+    expect(body.storage?.items).toHaveLength(35);
+    expect(body.storage?.maxSlots).toBe(300);
+    expect(body.guildStorage?.items).toHaveLength(2);
+    expect(body.guildStorage?.maxSlots).toBe(200);
+  });
+
+  it("os armazéns entram no totalValue", async () => {
+    const body = await viaApi();
+    const storages = (body.storage?.value ?? 0) + (body.guildStorage?.value ?? 0);
+    // > 0 para o teste não passar por os dois armazéns valerem zero, caso em que a soma
+    // abaixo fecharia sozinha sem provar nada.
+    expect(storages).toBeGreaterThan(0);
+    expect(body.totalValue).toBe(
+      body.inventory.value + body.cart.value + body.equipped.value + storages,
+    );
+  });
+
+  it("todo candidato a venda diz de onde o item saiu", async () => {
+    const body = await viaApi();
+    // Sem `origin` a sugestão não é acionável, e a do armazém do clã não avisaria que o
+    // item é compartilhado.
+    for (const c of body.sellCandidates) expect(typeof c.origin).toBe("string");
+    const origins = new Set(body.sellCandidates.map((c) => c.origin));
+    expect(origins.has("storage")).toBe(true);
+    expect(origins.has("guildStorage")).toBe(true);
+  });
+
+  it("um replay sem armazém aberto devolve null, e não vazio", async () => {
+    const res = await fetch(`${baseUrl}/api/v1/replay`, {
+      method: "POST",
+      headers: { "content-type": "application/octet-stream" },
+      body: readFileSync(
+        resolve(import.meta.dirname, "../replay/__tests__/fixtures/equip-test-2.rrf"),
+      ),
+    });
+    const body = (await res.json()) as StorageBody & { notes: string[] };
+    // `null` é "ninguém abriu"; uma lista vazia seria a afirmação de que está vazio.
+    expect(body.storage).toBeNull();
+    expect(body.guildStorage).toBeNull();
+    // Faltam os dois, então a nota vem no plural — pinça a concordância junto com a
+    // afirmação que importa, a de que ausência não é armazém vazio.
+    expect(body.notes.some((n) => n.includes("não foram abertos"))).toBe(true);
+    expect(body.notes.some((n) => n.includes("não é o mesmo que estar vazio"))).toBe(true);
+  });
+
+  it("o MCP responde o mesmo que a API", async () => {
+    const api = await viaApi();
+    const mcp = (await callTool("value_inventory", {
+      dados: fixture().toString("base64"),
+    })) as StorageBody & { candidatosAVenda: { origin: string }[] };
+
+    expect(mcp.storage?.items).toHaveLength(api.storage?.items.length ?? -1);
+    expect(mcp.guildStorage?.maxSlots).toBe(api.guildStorage?.maxSlots);
+    expect(mcp.totalValue).toBe(api.totalValue);
+    expect(mcp.candidatosAVenda.map((c) => c.origin)).toEqual(
+      api.sellCandidates.map((c) => c.origin),
+    );
   });
 });
 

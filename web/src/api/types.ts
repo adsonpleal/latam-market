@@ -15,7 +15,12 @@ import type { Appraisal } from "../../../src/core/appraise.js";
 import type { SearchSort } from "../../../src/core/items.js";
 import type { Deal, Mover } from "../../../src/core/movers.js";
 import type { SearchPrices } from "../../../src/core/prices.js";
-import type { ReplayValuation, SellCandidate, ValuedItem } from "../../../src/core/replay.js";
+import type {
+  ItemOrigin,
+  ReplayValuation,
+  SellCandidate,
+  ValuedItem,
+} from "../../../src/core/replay.js";
 import type { ServiceStatus } from "../../../src/core/status.js";
 import type { EquipSlot, FilterOption, ItemCategory } from "../../../src/core/taxonomy.js";
 import type {
@@ -37,6 +42,7 @@ export type {
   ItemBrief,
   ItemCategory,
   ItemLinks,
+  ItemOrigin,
   ItemPrice,
   Mover,
   SearchSort,

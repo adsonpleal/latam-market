@@ -500,9 +500,15 @@ export function registerTools(server: McpServer, db: DatabaseSync): void {
     {
       title: "Avaliar inventário de um replay (prefira a API)",
       description:
-        "Lê um arquivo de replay (.rrf) do Ragnarok e devolve inventário, carrinho e equipamento " +
-        "com o preço de mercado de cada item. Responde 'quanto vale o que eu tenho?', " +
-        "'mostra o preço dos meus itens', 'o que dá para vender com lucro?'.\n\n" +
+        "Lê um arquivo de replay (.rrf) do Ragnarok e devolve inventário, carrinho, equipamento " +
+        "e os armazéns do Kafra e do clã, com o preço de mercado de cada item. Responde " +
+        "'quanto vale o que eu tenho?', 'mostra o preço dos meus itens', " +
+        "'o que dá para vender com lucro?', 'quanto vale meu armazém?'.\n\n" +
+        "Os armazéns só aparecem se a janela foi aberta durante a gravação — o arquivo não " +
+        "os guarda, o servidor os manda quando a janela abre. Vêm como `null` quando ninguém " +
+        "abriu, que é diferente de um armazém vazio; nesse caso, para incluí-los, peça um " +
+        "replay novo gravado com o armazém aberto. Quando existem, entram em `totalValue` — " +
+        "então o total NÃO é comparável entre um replay que passou no Kafra e um que não.\n\n" +
         `⚠ PREFIRA A API SE VOCÊ CONSEGUE EXECUTAR COMANDOS. Mandar o arquivo por aqui ` +
         `exige codificá-lo em base64 dentro da chamada: um replay comum vira ~120 KB de ` +
         `texto, ou seja, dezenas de milhares de tokens do seu contexto — para um arquivo ` +
@@ -513,8 +519,11 @@ export function registerTools(server: McpServer, db: DatabaseSync): void {
         `Use esta ferramenta apenas quando não houver como fazer a requisição — por ` +
         `exemplo, num cliente sem acesso a shell ou a rede.\n\n` +
         "Itens sem ninguém vendendo saem com preço nulo e não entram no total — o total nunca é chutado. " +
-        "Refino e cartas não são precificados: o mercado agrega por item, então um +9 sai " +
-        "com o preço do item base e vem com um aviso.",
+        "Refino, grau e cartas não são precificados: o mercado agrega por item, então um +9 sai " +
+        "com o preço do item base e vem com um aviso.\n\n" +
+        "Cada candidato a venda traz `origin`, dizendo de onde o item saiu (mochila, carrinho, " +
+        "equipado, armazém do Kafra ou do clã). Vale repassar: sugerir a venda de algo que está " +
+        "no armazém do clã, que é compartilhado, sem dizer que está lá, é enganoso.",
       inputSchema: SCHEMAS.valueInventory,
     },
     (args, market) => {

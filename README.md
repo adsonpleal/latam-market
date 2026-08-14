@@ -35,8 +35,8 @@ Conectado a um agente (Claude, por exemplo), o MCP responde coisas assim:
 - **Avaliação de preço** — quantas lojas estão mais baratas, quanto pedir para ser o
   mais barato, e como o preço se compara à média dos últimos dias.
 - **Pechinchas e maiores variações** — varreduras sobre o mercado inteiro.
-- **Leitura de replay `.rrf`** — inventário, carrinho de mercador e equipamento, com
-  preço de mercado em cada item.
+- **Leitura de replay `.rrf`** — inventário, carrinho de mercador, equipamento e os
+  armazéns do Kafra e do clã, com preço de mercado em cada item.
 - **Links prontos** — todo item vem com a página no
   [Divine Pride](https://www.divine-pride.net) e a busca no site oficial, já ordenada do
   mais barato para o mais caro. É para lá que se vai quando a pergunta é "e agora, neste
@@ -222,7 +222,7 @@ Variáveis úteis: `PORT`, `DB_PATH`, `DATA_DIR`, `COLLECTOR_PATH`, `CRAWL_ENABL
 ```
 src/
   store/     SQLite, cache quente e retenção
-  replay/    leitura de arquivos .rrf (inventário, carrinho, equipamento)
+  replay/    leitura de arquivos .rrf (inventário, carrinho, equipamento, armazéns)
   core/      a lógica de mercado — a única camada que API e MCP enxergam
   api/       rotas REST
   mcp/       ferramentas MCP
@@ -275,8 +275,14 @@ necessário documentado no topo de cada um.
   temporal; o que ele dá é um agregado acumulado, e o resto é medição nossa.
 - **O retrato de um replay é do início da gravação.** Itens pegos ou gastos durante a
   gravação não aparecem.
-- Alguns containers de item do `.rrf` ainda não foram identificados (provavelmente
-  armazém da Kafra). Eles vêm à parte, em `unidentified`, e não entram no total.
+- **O armazém só existe no replay se a janela foi aberta durante a gravação.** Ele não
+  está no arquivo: o servidor manda a listagem no instante em que a janela abre. Sem
+  isso, `storage` e `guildStorage` vêm `null` — que é "ninguém abriu", e não "está
+  vazio". Como eles entram em `totalValue`, **o total não é comparável entre um replay
+  que passou no Kafra e um que não passou.**
+- Alguns containers de item do `.rrf` ainda não foram identificados. Eles vêm à parte, em
+  `unidentified`, e não entram no total. Já se supôs que fossem o armazém; não são — numa
+  gravação com as duas janelas de armazém abertas eles vêm vazios do mesmo jeito.
 
 ## Créditos
 

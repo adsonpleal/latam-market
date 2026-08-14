@@ -733,7 +733,7 @@ table.offers td {
 
 .candidates li {
   display: grid;
-  grid-template-columns: 24px minmax(160px, 1fr) auto minmax(200px, 2fr);
+  grid-template-columns: 24px minmax(160px, 1fr) auto auto minmax(200px, 2fr);
   align-items: center;
   gap: 12px;
   background: var(--surface);
@@ -745,6 +745,18 @@ table.offers td {
 .candidate-value {
   font-variant-numeric: tabular-nums;
   font-weight: 600;
+}
+
+/* Etiqueta de onde o item está. `white-space: nowrap` porque "Armazém do clã" quebraria
+   em duas linhas e desalinharia a altura da linha inteira. */
+.candidate-origin {
+  justify-self: start;
+  white-space: nowrap;
+  font-size: 0.75rem;
+  color: var(--muted);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 1px 8px;
 }
 
 .candidate-reason {
@@ -1030,6 +1042,11 @@ tr:hover .copy,
 
   .candidate-reason {
     grid-column: 1 / -1;
+  }
+
+  /* Ao lado do valor, na mesma faixa — a etiqueta é curta e não justifica uma linha só. */
+  .candidate-origin {
+    justify-self: end;
   }
 
   .filter-actions {
