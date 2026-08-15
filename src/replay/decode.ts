@@ -34,9 +34,9 @@
 
 import {
   decodeReplay as decodeFull,
+  storageAt,
   type ItemRecord as LibItemRecord,
   type Replay as LibReplay,
-  type StorageChangeEvent,
   type StorageItem as LibStorageItem,
   type StorageKind,
 } from "rrfparser";
@@ -143,80 +143,24 @@ const fromStorage = ({ index, ...r }: LibStorageItem): ItemRecord =>
   strip({ ...r, slot: index, equipped: 0 });
 
 /**
- * Aplica depósitos e retiradas sobre a listagem de um armazém, na ordem em que vieram.
- *
- * ⚠ **Isto devia morar no `rrfparser`, não aqui.** O que esta função sabe é protocolo, não
- * mercado: que o `index` é alça e não posição, que uma retirada não listada vem com
- * `itemId` 0, que há uma listagem por abertura. A própria lib manda cada consumidor
- * resolver isso ("apply these in order to the last StorageSnapshot of the same kind"), o
- * que significa que o simulador e o RagnaRecap vão escrever esta mesma função de novo,
- * cada um com a sua resposta para o item fantasma — exatamente a duplicação que a lib foi
- * criada para acabar (ver 94b06dd). O certo é um `storageAt(replay, kind)` na 1.2, com os
- * casos de `decode.test.ts` indo junto; até lá, isto é um paliativo.
- *
- * Existe separada e exportada para ser testável direto: nenhum dos replays que temos em
- * mão movimenta item com a janela aberta, então o caminho só se exercita com entrada
- * montada à mão.
- *
- * A alça é o `index` do servidor. Uma retirada de índice que a listagem não trouxe é
- * ignorada — sem a linha original não há o que subtrair, e a biblioteca já resolve o
- * `itemId` como 0 nesse caso, que entraria na conta como um item fantasma.
- */
-export function applyStorageChanges(
-  items: LibStorageItem[],
-  changes: StorageChangeEvent[],
-): LibStorageItem[] {
-  const byIndex = new Map(items.map((i) => [i.index, { ...i }]));
-
-  for (const change of changes) {
-    const current = byIndex.get(change.index);
-
-    if (change.added) {
-      if (current) current.qty += change.amount;
-      else {
-        byIndex.set(change.index, {
-          index: change.index,
-          itemId: change.itemId,
-          qty: change.amount,
-          equipped: 0,
-          refine: change.refine,
-          grade: change.grade,
-          cards: change.cards,
-          options: change.options,
-        });
-      }
-      continue;
-    }
-
-    if (!current) continue;
-    current.qty -= change.amount;
-    if (current.qty <= 0) byIndex.delete(change.index);
-  }
-
-  return [...byIndex.values()].sort((a, b) => a.index - b.index);
-}
-
-/**
  * O armazém como estava no fim da gravação, ou `null` se nunca foi aberto.
  *
- * A biblioteca entrega uma listagem por abertura, então a pessoa que abre, fecha e abre
- * de novo aparece duas vezes. A última é a que vale: o servidor relista o conteúdo atual
- * a cada abertura, então tudo que foi movimentado antes dela já está refletido ali, e
- * reaplicar aqueles eventos contaria o mesmo depósito duas vezes.
+ * Quem junta a listagem com os depósitos e retiradas é a lib, pelo `storageAt` da 1.2 —
+ * antes disso essa costura morava aqui, e não devia: o que ela sabe é protocolo (que o
+ * `index` é alça e não posição, que a última listagem já reflete o que veio antes dela,
+ * que uma retirada não listada tem de ser descartada), não mercado. A lib mandava cada
+ * consumidor resolver isso, o que ia render uma cópia por consumidor — a duplicação que
+ * ela foi criada para acabar. Aqui sobrou só a tradução para o formato da casa.
  */
 function latestStorage(replay: LibReplay, kind: StorageKind): DecodedStorage | null {
-  const last = replay.storages.filter((s) => s.kind === kind).at(-1);
-  if (!last) return null;
-
-  // `>=` e não `>`: a listagem e um movimento podem cair no mesmo milissegundo, e nesse
-  // empate o movimento é depois dela — não daria para depositar numa janela que já fechou.
-  const after = replay.storageChanges.filter((c) => c.kind === kind && c.time >= last.time);
+  const snapshot = storageAt(replay, kind);
+  if (snapshot === null) return null;
 
   return {
-    items: applyStorageChanges(last.items, after).map(fromStorage),
-    usedSlots: last.usedSlots,
-    maxSlots: last.maxSlots,
-    openedAtMs: last.time,
+    items: snapshot.items.map(fromStorage),
+    usedSlots: snapshot.usedSlots,
+    maxSlots: snapshot.maxSlots,
+    openedAtMs: snapshot.time,
   };
 }
 

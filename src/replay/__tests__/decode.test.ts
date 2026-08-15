@@ -7,14 +7,17 @@
  * `storage-test.rrf` é a segunda fixture, gravada abrindo as duas janelas de armazém —
  * é o único replay em mão que tem armazém, e o que prova que eles NÃO estão nos
  * contêineres do arquivo (a lista `unknown` vem vazia mesmo com as janelas abertas).
+ *
+ * O merge de depósitos e retiradas não é testado aqui: virou `storageAt` no `rrfparser`
+ * 1.2, e os casos montados à mão que moravam neste arquivo foram junto (`storage-state.spec.ts`
+ * lá). O que sobra deste lado é a tradução para o formato da casa, que a fixture cobre.
  */
 
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
-import type { StorageChangeEvent, StorageItem } from "rrfparser";
 
-import { applyStorageChanges, decodeReplay } from "../decode.js";
+import { decodeReplay } from "../decode.js";
 
 function loadFixture(name: string): ArrayBuffer {
   const buf = readFileSync(resolve(import.meta.dirname, "fixtures", name));
@@ -132,87 +135,5 @@ describe("decodeReplay — armazéns", () => {
     expect(Object.keys(withStorage.items.unknown)).toHaveLength(0);
     expect(withStorage.items.inventory).toHaveLength(77);
     expect(withStorage.items.cart).toHaveLength(9);
-  });
-});
-
-/**
- * Nenhum replay em mão movimenta item com a janela aberta, então o merge só se exercita
- * com entrada montada à mão — que é a razão de `applyStorageChanges` ser exportada.
- */
-describe("applyStorageChanges", () => {
-  const item = (index: number, itemId: number, qty: number): StorageItem => ({
-    index,
-    itemId,
-    qty,
-    equipped: 0,
-    refine: 0,
-    grade: 0,
-    cards: [0, 0, 0, 0],
-    options: [],
-  });
-
-  const change = (
-    index: number,
-    added: boolean,
-    amount: number,
-    itemId = 0,
-  ): StorageChangeEvent => ({
-    time: 0,
-    kind: "storage",
-    index,
-    added,
-    itemId,
-    amount,
-    refine: 0,
-    grade: 0,
-    cards: [0, 0, 0, 0],
-    options: [],
-  });
-
-  it("devolve a listagem intacta quando nada se moveu", () => {
-    const items = [item(2, 501, 10), item(3, 502, 5)];
-    expect(applyStorageChanges(items, [])).toEqual(items);
-  });
-
-  it("soma na pilha existente ao depositar", () => {
-    const out = applyStorageChanges([item(2, 501, 10)], [change(2, true, 5)]);
-    expect(out).toHaveLength(1);
-    expect(out[0]!.qty).toBe(15);
-  });
-
-  it("cria a linha ao depositar num índice que a listagem não tinha", () => {
-    const out = applyStorageChanges([item(2, 501, 10)], [change(9, true, 3, 909)]);
-    expect(out).toHaveLength(2);
-    expect(out.find((r) => r.index === 9)).toMatchObject({ itemId: 909, qty: 3 });
-  });
-
-  it("subtrai ao retirar e remove a linha quando zera", () => {
-    const items = [item(2, 501, 10), item(3, 502, 5)];
-    const out = applyStorageChanges(items, [change(2, false, 4), change(3, false, 5)]);
-    expect(out).toHaveLength(1);
-    expect(out[0]).toMatchObject({ index: 2, qty: 6 });
-  });
-
-  it("ignora retirada de índice que a listagem não trouxe", () => {
-    // A lib resolve o `itemId` como 0 nesse caso; aplicar viraria um item fantasma
-    // (ou uma quantidade negativa) na conta.
-    const out = applyStorageChanges([item(2, 501, 10)], [change(77, false, 1)]);
-    expect(out).toEqual([item(2, 501, 10)]);
-  });
-
-  it("aplica os eventos na ordem em que vieram", () => {
-    const out = applyStorageChanges(
-      [item(2, 501, 10)],
-      [change(2, false, 10), change(2, true, 4, 501)],
-    );
-    // A retirada zera e apaga a linha; o depósito seguinte a recria com 4.
-    expect(out).toHaveLength(1);
-    expect(out[0]).toMatchObject({ index: 2, itemId: 501, qty: 4 });
-  });
-
-  it("não muta a listagem recebida", () => {
-    const items = [item(2, 501, 10)];
-    applyStorageChanges(items, [change(2, true, 5)]);
-    expect(items[0]!.qty).toBe(10);
   });
 });

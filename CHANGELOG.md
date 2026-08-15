@@ -3,6 +3,18 @@
 Mais recente primeiro. A seção do topo é a fonte do post de novidades no Discord
 (`tools/post-novidades.mjs`), então escreva pensando em quem vai ler lá.
 
+## 0.9.1 — 2026-08-14
+
+- Só arrumação interna: **nada muda no que a API ou o site respondem** — conferido
+  comparando a resposta inteira do mesmo replay antes e depois, campo por campo.
+  - A costura que juntava a listagem do armazém com os depósitos e retiradas subiu
+    para o `rrfparser` 1.2.0, como `storageAt`. Ela morava aqui e não devia: o que
+    ela sabe é protocolo do jogo, não mercado. A biblioteca mandava cada consumidor
+    resolver isso por conta, o que ia render uma cópia no simulador e outra no
+    RagnaRecap, cada uma com a sua resposta para os casos estranhos — exatamente a
+    duplicação que motivou extrair a biblioteca na 0.8.0. Agora existe uma vez, e os
+    três ganham a mesma correção quando ela vier.
+
 ## 0.9.0 — 2026-08-14
 
 - **O armazém entrou na conta.** Até agora "quanto vale tudo que eu tenho?" respondia só

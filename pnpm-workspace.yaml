@@ -22,4 +22,4 @@ allowBuilds:
 # para o pacote, escrito devagar. O `pnpm add` acrescenta a linha nova sozinho; tirar a
 # antiga é manual.
 minimumReleaseAgeExclude:
-  - rrfparser@1.1.0
+  - rrfparser@1.2.0
