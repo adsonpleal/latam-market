@@ -36,8 +36,8 @@ const INSTRUCTIONS = [
 
 export function createMcpServer(db: DatabaseSync): McpServer {
   const server = new McpServer(
-    // Acompanha a versão do pacote; já divergiu duas vezes por ficar esquecida aqui.
-    { name: "latam-market", version: "0.6.0" },
+    // Acompanha a versão do pacote; já divergiu três vezes por ficar esquecida aqui.
+    { name: "latam-market", version: "0.10.0" },
     { instructions: INSTRUCTIONS },
   );
   registerTools(server, db);

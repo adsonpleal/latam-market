@@ -11,6 +11,7 @@ import { plainDescription } from "../lib/description.js";
 import {
   ALL_ORIGINS,
   applyFilters,
+  countHiddenUnpriced,
   countUnpriced,
   flatten,
   sumValue,
@@ -33,6 +34,13 @@ const DEFAULT_FILTERS: Filters = {
   // mão, as duas cifras começariam diferentes e ninguém saberia por quê.
   origins: new Set<Origin>(ALL_ORIGINS.filter((o) => o !== "unidentified")),
   hideUntradable: true,
+  // Os limites começam desligados pelo mesmo motivo acima: qualquer piso ou teto ligado de
+  // saída faria "Selecionado" abrir menor que "Total do replay", e a diferença pareceria
+  // um erro de conta em vez de um filtro.
+  hideUnpriced: false,
+  minTotal: null,
+  maxStores: null,
+  minSold: null,
   search: "",
 };
 
@@ -89,6 +97,11 @@ export function ReplayPage({
   const unsellableCount = useMemo(
     () => rows.filter(isUnsellable).length,
     [rows, isUnsellable],
+  );
+
+  const unpricedCount = useMemo(
+    () => countHiddenUnpriced(rows, filters, isUnsellable),
+    [rows, filters, isUnsellable],
   );
 
   const availableOrigins = useMemo(
@@ -168,6 +181,7 @@ export function ReplayPage({
         onChange={setFilters}
         availableOrigins={availableOrigins}
         unsellableCount={unsellableCount}
+        unpricedCount={unpricedCount}
         untradableFailed={catalogue.untradableFailed}
         onExport={exportCsv}
         onClear={reset}

@@ -3,6 +3,34 @@
 Mais recente primeiro. A seção do topo é a fonte do post de novidades no Discord
 (`tools/post-novidades.mjs`), então escreva pensando em quem vai ler lá.
 
+## 0.10.0 — 2026-08-15
+
+- **Agora dá para filtrar o inventário por valor, por concorrência e por liquidez.** Subir
+  um replay respondia "quanto vale tudo isso", mas não a pergunta seguinte, que é a que
+  interessa na hora de montar a loja: *o que eu ponho à venda hoje?* Entre trezentas linhas
+  ordenadas por preço, a resposta estava lá — só não dava para chegar nela. São quatro
+  campos novos na barra de filtros, todos começando desligados, então a tela abre igual à
+  de antes.
+  - **Já vendidos ≥** — quantas unidades daquele item o site já registrou vendidas. É o
+    filtro de liquidez: separa o que de fato sai do que só tem preço bonito no anúncio.
+  - **Total ≥** — piso de zeny por linha, para sumir com o rabo de itens de 200z que ocupa
+    a tela inteira. Vale o total da pilha, que é o que compete por um espaço na sua loja.
+  - **Lojas ≤** — teto de concorrência. Poucas lojas vendendo é onde você define o preço;
+    muitas é onde você entra numa fila.
+  - **Esconder sem preço** — tira da frente o que ninguém está vendendo agora, que é
+    justamente sobre o que não dá para agir.
+- **O que eles valem é a combinação.** `Total ≥ 10.000` com `Lojas ≤ 15` e
+  `Já vendidos ≥ 100` é, numa frase: vale a pena, ninguém está disputando, e comprovadamente
+  sai. Num inventário de teste isso vai de 93 itens para 9 — e os 9 são a lista do que
+  colocar na loja.
+- **Uma ressalva sobre o "Já vendidos", porque ela muda como ler o número:** é o acumulado
+  histórico que o site publica, não a velocidade de venda de hoje. Ele premia item velho e
+  comum tanto quanto item que gira rápido — uma Poção Vermelha vai ganhar de qualquer
+  chapéu bom nessa coluna, sempre. Ainda é o melhor sinal de liquidez que existe no dado
+  disponível, e a tela avisa isso ao lado do campo em vez de deixar você descobrir sozinho.
+- Os filtros valem também para **o CSV e para os totais do topo**, não só para a tabela: o
+  "Selecionado" acompanha o que sobrou, e o que você exporta é exatamente o que está vendo.
+
 ## 0.9.1 — 2026-08-14
 
 - Só arrumação interna: **nada muda no que a API ou o site respondem** — conferido

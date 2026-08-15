@@ -425,12 +425,22 @@ main {
 
 /* --- filtros --------------------------------------------------------- */
 
-.filters {
+/* Os refinamentos são a SEGUNDA linha da mesma barra, então dividem o espaçamento dela: o
+   `flex-basis` é o que força a quebra, e é a única diferença entre as duas. */
+.filters,
+.filter-refine {
   display: flex;
   align-items: center;
   gap: 14px;
   flex-wrap: wrap;
+}
+
+.filters {
   margin-bottom: 12px;
+}
+
+.filter-refine {
+  flex-basis: 100%;
 }
 
 .filter-group {
@@ -480,9 +490,20 @@ button.ghost {
   color: var(--muted);
 }
 
+/* `.limit` é um `.toggle` com um número no lugar da caixa: só o campo é próprio dele. */
+.limit input {
+  width: 8.5ch;
+  font-variant-numeric: tabular-nums;
+}
+
+.limit .note {
+  margin: 0;
+}
+
 .search,
 .search-bar input,
 .appraise input,
+.limit input,
 select {
   font: inherit;
   padding: 6px 10px;

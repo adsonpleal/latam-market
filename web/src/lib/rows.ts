@@ -63,8 +63,27 @@ export function flatten(valuation: ReplayResponse): Row[] {
 export interface Filters {
   origins: Set<Origin>;
   hideUntradable: boolean;
+  /** Esconde as linhas sem preço — as que o mercado não sabe cotar (`total === null`). */
+  hideUnpriced: boolean;
+  /**
+   * Os três limites numéricos. `null` é "sem limite" — o campo vazio na interface vira
+   * `null` e não `0`, porque um piso de zero já filtra: ver `belowFloor`.
+   */
+  minTotal: number | null;
+  maxStores: number | null;
+  minSold: number | null;
   search: string;
 }
+
+/**
+ * Um piso ligado exclui o desconhecido, e não o trata como zero.
+ *
+ * "Vale pelo menos 10.000z" é uma pergunta que um item sem cotação não responde — deixá-lo
+ * passar encheria a lista filtrada justamente do que ela quer tirar. É o que faz `0` ser
+ * diferente de "sem piso": com piso zero os sem preço somem, com `null` eles ficam.
+ */
+const belowFloor = (value: number | null, floor: number | null): boolean =>
+  floor !== null && (value === null || value < floor);
 
 /**
  * Filtra fora da TanStack Table de propósito.
@@ -83,6 +102,16 @@ export function applyFilters(
   return rows.filter((row) => {
     if (!filters.origins.has(row.origin)) return false;
     if (filters.hideUntradable && isUntradable(row)) return false;
+    if (filters.hideUnpriced && row.total === null) return false;
+
+    // Por `belowFloor`, um piso ligado esconde os sem preço mesmo com `hideUnpriced` off.
+    if (belowFloor(row.total, filters.minTotal)) return false;
+    // `stores` é sempre número: zero significa "ninguém vendendo agora", que é o caso mais
+    // interessante do teto e não pode ser confundido com ausência de dado — por isso o teto
+    // é a única das três comparações que não passa por `belowFloor`.
+    if (filters.maxStores !== null && row.stores > filters.maxStores) return false;
+    if (belowFloor(row.market?.totalSold ?? null, filters.minSold)) return false;
+
     if (needle.length > 0 && !row.item.name.toLowerCase().includes(needle)) return false;
     return true;
   });
@@ -93,3 +122,30 @@ export const sumValue = (rows: Row[]): number =>
 
 export const countUnpriced = (rows: Row[]): number =>
   rows.reduce((n, row) => n + (row.total === null ? 1 : 0), 0);
+
+/**
+ * Os filtros que escondem linha sem preço. Um filtro novo que também esconda entra aqui.
+ *
+ * `Pick` em vez de `Partial` para a lista não aceitar uma chave que não existe mais.
+ */
+const UNPRICED_HIDERS: Pick<Filters, "hideUnpriced" | "minTotal"> = {
+  hideUnpriced: false,
+  minTotal: null,
+};
+
+/**
+ * Quantos sem preço o filtro ainda tem para esconder do que ESTÁ na seleção.
+ *
+ * Nem `rows` nem o resultado de `applyFilters` servem como rótulo do botão. Sobre `rows`
+ * daria o total do replay enquanto o cabeçalho, na mesma tela, conta só a seleção — dois
+ * números para a mesma coisa. Sobre a lista já filtrada o rótulo zeraria assim que a caixa
+ * fosse marcada, que é justamente quando ele precisa dizer quanto está escondendo.
+ *
+ * Mora aqui, e não na página, porque a resposta depende de QUAIS filtros escondem sem
+ * preço — que é o que as linhas acima decidem. Longe delas, a lista envelheceria calada.
+ */
+export const countHiddenUnpriced = (
+  rows: Row[],
+  filters: Filters,
+  isUntradable: (row: Row) => boolean,
+): number => countUnpriced(applyFilters(rows, { ...filters, ...UNPRICED_HIDERS }, isUntradable));
