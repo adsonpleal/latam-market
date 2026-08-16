@@ -168,6 +168,14 @@ export function App() {
             Discord
           </a>
           <span>•</span>
+          <a href={EXTERNAL.reportar} target="_blank" rel="noreferrer noopener">
+            Reportar
+          </a>
+          <span>•</span>
+          <a href={EXTERNAL.issues} target="_blank" rel="noreferrer noopener">
+            Acompanhar
+          </a>
+          <span>•</span>
           <a href={EXTERNAL.repo} target="_blank" rel="noreferrer noopener">
             Código no GitHub
           </a>

@@ -30,6 +30,11 @@ Mais recente primeiro. A seção do topo é a fonte do post de novidades no Disc
   disponível, e a tela avisa isso ao lado do campo em vez de deixar você descobrir sozinho.
 - Os filtros valem também para **o CSV e para os totais do topo**, não só para a tabela: o
   "Selecionado" acompanha o que sobrou, e o que você exporta é exatamente o que está vendo.
+- **Achou um preço errado ou uma tela quebrada? Agora dá para avisar sem ser pelo Discord.**
+  No rodapé há dois links novos: **Reportar**, que abre o formulário já marcado como sendo
+  deste projeto, e **Acompanhar**, que mostra o quadro com o que já foi reportado e em que
+  pé está. É o mesmo rastreador das outras ferramentas do LATAM Tools. O Discord continua
+  onde sempre esteve — o que muda é que o relato deixa de se perder no meio da conversa.
 
 ## 0.9.1 — 2026-08-14
 
