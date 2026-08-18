@@ -10,7 +10,7 @@ import { useEffect, useState } from "react";
 
 import { appraise, itemHistory, itemOffers, itemPrice, messageOf } from "../api/client.js";
 import type { AppraiseResponse } from "../api/types.js";
-import { count, zeny } from "../lib/format.js";
+import { count, itemLabel, zeny } from "../lib/format.js";
 import { parseDescription } from "../lib/description.js";
 import { useApi } from "../state/useApi.js";
 import { useDismissable } from "../state/useDismissable.js";
@@ -85,16 +85,7 @@ export function ItemDrawer({ itemId, description, onClose }: Props) {
             <header className="drawer-head">
               <ItemIcon itemId={itemId} size={40} />
               <div>
-                {/* A estrela é irmã do título, não conteúdo dele: dentro do `h3` ela herdava
-                    o negrito e a entrelinha do cabeçalho e saía com outro tamanho e fora do
-                    eixo. Aqui é o mesmo componente e o mesmo desenho da lista de busca.
-
-                    Só favoritar. O alvo do alerta se configura na aba Favoritos, para o
-                    modal não ter dois lugares de onde abrir. */}
-                <div className="drawer-title">
-                  <StarButton itemId={itemId} />
-                  <h3>{price.name}</h3>
-                </div>
+                <Title itemId={itemId} name={price.name} slots={price.slots} />
                 <ItemLinksCell links={price.links} />
               </div>
             </header>
@@ -201,6 +192,30 @@ export function ItemDrawer({ itemId, description, onClose }: Props) {
         )}
       </aside>
     </>
+  );
+}
+
+/**
+ * Estrela, nome e o botão que copia o nome.
+ *
+ * A estrela é irmã do título, não conteúdo dele: dentro do `h3` ela herdava o negrito e a
+ * entrelinha do cabeçalho e saía com outro tamanho e fora do eixo. Aqui é o mesmo
+ * componente e o mesmo desenho da lista de busca. Só favoritar — o alvo do alerta se
+ * configura na aba Favoritos, para o modal não ter dois lugares de onde abrir.
+ *
+ * O título traz os slots, como nas tabelas, e o botão ao lado copia exatamente o que está
+ * escrito: "Espada" no painel com "Espada [3]" na área de transferência seria a pior das
+ * versões. É um rótulo só, montado uma vez, que garante isso.
+ */
+function Title({ itemId, name, slots }: { itemId: number; name: string; slots: number | null }) {
+  const label = itemLabel(name, 0, slots);
+
+  return (
+    <div className="drawer-title">
+      <StarButton itemId={itemId} />
+      <h3>{label}</h3>
+      <CopyButton value={label} label="o nome do item" />
+    </div>
   );
 }
 

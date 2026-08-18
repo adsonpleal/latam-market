@@ -196,13 +196,6 @@ main {
   font-size: 0.85rem;
 }
 
-/* O botão de copiar aqui é a ação principal do modal, então fica sempre visível —
-   ao contrário dos da tabela, que só aparecem no hover da linha. */
-.mcp-url .copy {
-  opacity: 1;
-  font-size: 1rem;
-}
-
 .mcp-examples {
   display: grid;
   gap: 8px;
@@ -917,6 +910,14 @@ tr:hover .copy,
 
 .copy-done {
   color: var(--up);
+}
+
+/* Fora de uma tabela não há linha sobre a qual passar o mouse, então nestes dois o botão
+   nasce visível. */
+.mcp-url .copy,
+.drawer-title .copy {
+  opacity: 1;
+  font-size: 1rem;
 }
 
 .appraise {

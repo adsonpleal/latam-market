@@ -181,11 +181,15 @@ function buildColumns(ctx: {
       header: "Item",
       cell: ({ row }) => (
         <>
+          {/* `copiable`: o nome vai para a área de transferência com slots e tudo — é o que
+              se cola na busca do jogo ou num anúncio, e digitar "[4]" à mão erra com
+              frequência. */}
           <ItemCell
             item={row.original}
             descriptions={descriptions}
             onSelect={onSelect}
             part="name"
+            copiable
           />
           <TrendArrow pct={movers.get(row.original.itemId)} />
           {/* O selo continua ao lado do nome, e não só na coluna "Visto no mercado":

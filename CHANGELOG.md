@@ -3,6 +3,15 @@
 Mais recente primeiro. A seção do topo é a fonte do post de novidades no Discord
 (`tools/post-novidades.mjs`), então escreva pensando em quem vai ler lá.
 
+## 0.11.0 — 2026-08-18
+
+- **Dá para copiar o nome do item com um clique, na busca e no painel de detalhe.** Passe o
+  mouse numa linha da busca e aparece o ⧉ ao lado do nome; no painel que abre ao clicar no
+  item, ele fica sempre à vista, do lado do título. O que vai para a área de transferência é
+  o nome inteiro, com os slots — "Espada Larga [1]", e não "Espada Larga" — que é o que se
+  cola na busca do jogo ou num anúncio sem errar o colchete. De quebra, o título do painel
+  agora também mostra os slots, como as tabelas já mostravam.
+
 ## 0.10.1 — 2026-08-18
 
 - **A busca já conhece os itens da atualização nova do cliente.** São 111 nomes que ontem
