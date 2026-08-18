@@ -3,6 +3,27 @@
 Mais recente primeiro. A seção do topo é a fonte do post de novidades no Discord
 (`tools/post-novidades.mjs`), então escreva pensando em quem vai ler lá.
 
+## 0.10.1 — 2026-08-18
+
+- **A busca já conhece os itens da atualização nova do cliente.** São 111 nomes que ontem
+  ainda não existiam por aqui — se você procurou por algum deles e a busca voltou vazia, era
+  só isso. O que entrou, em três blocos:
+  - **Cubos Sombrios** — a linha inteira, dos genéricos (Onda de Choque, Fatal, Escarlate,
+    Psíquico) aos de classe, de Cavaleiro Rúnico a Invocador, mais os Raciais DEF e DEFM.
+  - **Primordiais-LT e o refino que vem junto** — Wakizashi, Faca, Bastão, Pêndulo, Cauda de
+    Gato, Revólver, Rifle, Escopeta, Gatling e Lança-Granadas, com os Martelos de Refino, os
+    Reformadores e os Cadernos (Automagia, Portador, Fugaz, Durável) no mesmo pacote.
+  - **Caixas de evento** — as três Caixas Abençoadas, as caixas de ovos de agosto, as dez
+    Roletas de Setembro, o Artefato Oval Noturno e os itens de Arena.
+- **Em compensação, 833 itens sumiram do catálogo — e isso é do jogo, não daqui.** O cliente
+  aposentou esses itens e tirou o nome deles das tabelas; sem nome não há como procurar,
+  então eles saíram. É coisa que você provavelmente não ia procurar mesmo — equipamento de
+  aluguel, visuais de temporadas antigas, Pantufas de Coelho, Anel da Água, Toalha de Praia.
+  Fica o aviso porque a diferença é visível: se um item antigo parou de aparecer na busca de
+  um dia para o outro, é por aqui que passou.
+- Nada mudou de comportamento no site: mesma tela, mesmos filtros, mesmo cálculo de preço. O
+  que mudou foi só a lista de nomes que ele reconhece.
+
 ## 0.10.0 — 2026-08-15
 
 - **Agora dá para filtrar o inventário por valor, por concorrência e por liquidez.** Subir
