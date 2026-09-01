@@ -3,6 +3,22 @@
 Mais recente primeiro. A seção do topo é a fonte do post de novidades no Discord
 (`tools/post-novidades.mjs`), então escreva pensando em quem vai ler lá.
 
+## 0.12.0 — 2026-08-31
+
+- **O gráfico de preço do item agora responde ao mouse.** Passe por cima e ele mostra a data
+  e quanto cada linha valia ali: menor oferta, mediana das ofertas e média vendida, com uma
+  guia marcando o ponto. Antes as curvas diziam o formato da coisa — subiu, caiu, estabilizou
+  — mas o número tinha que ser adivinhado pela escala do lado, e num gráfico de trinta dias
+  espremido no painel isso é chute. Série que não tem medida naquele dia não aparece no
+  cartão, em vez de mostrar um zero que ninguém mediu. No celular, funciona tocando o
+  gráfico.
+- **O item que você acabou de favoritar não aparece mais como "#25697".** Favoritar e ir
+  direto para a aba Favoritos mostrava a linha só com o número do item e uma fileira de
+  travessões; recarregar a página resolvia, o que não é o tipo de coisa que alguém deveria
+  precisar descobrir. O motivo era que a aba só conhece os preços da última checagem, e a
+  checagem seguinte pode estar a meia hora. Agora o favorito novo é buscado na hora — só ele,
+  não a lista inteira — e a linha já nasce com nome, ícone e preço.
+
 ## 0.11.0 — 2026-08-18
 
 - **Dá para copiar o nome do item com um clique, na busca e no painel de detalhe.** Passe o

@@ -10,6 +10,11 @@
  * duas coisas buscando, a tabela poderia mostrar um retrato diferente daquele que decidiu o
  * alerta — divergência invisível, o pior tipo.
  *
+ * São dois caminhos de escrita no retrato, e só um decide alerta: o ciclo, que lê a lista
+ * inteira e passa pelo `planAlerts`; e o preenchimento, que só completa favorito que o
+ * retrato ainda não cobre. Um alerta de item recém-preenchido é avaliado no ciclo seguinte,
+ * como já era antes de o preenchimento existir.
+ *
  * `setTimeout` em cadeia em vez de `setInterval`, porque a espera muda a cada ciclo: o
  * servidor conta quando é a próxima coleta e a aba dorme até lá (ver `lib/schedule.ts`).
  *
@@ -104,6 +109,8 @@ export function useFavoriteWatch(server: Server): FavoriteWatch {
   /** O `tradingAt` do ciclo anterior, para saber se a coleta pousou. */
   const lastTradingAt = useRef<number | null>(null);
   const runningRef = useRef(false);
+  /** Ids com preenchimento em voo, para dois cliques seguidos não repetirem o primeiro. */
+  const asking = useRef<Set<number>>(new Set());
 
   /** Devolve `true` quando o retrato lido era o mesmo do ciclo anterior. */
   const tick = useCallback(async (reason: "timer" | "manual" | "visible"): Promise<boolean> => {
@@ -165,6 +172,69 @@ export function useFavoriteWatch(server: Server): FavoriteWatch {
     // `setSnapshot` é estável (vem de `usePersistent`, com deps `[key]`), então o ciclo
     // continua sendo uma função só, criada uma vez.
   }, [setSnapshot]);
+
+  /**
+   * Completa os favoritos que o retrato ainda não cobre, sem esperar o ciclo.
+   *
+   * Favoritar não remonta o timer (ver logo abaixo), e faz bem em não remontar — mas até o
+   * próximo despertar, que pode estar a meia hora, a linha nova aparecia como `#25697` e
+   * uma fileira de travessões, porque a tabela lê tudo do retrato. Recarregar a página
+   * "consertava", que é como o problema chegava a quem usa.
+   *
+   * A condição não é "alguém clicou na estrela", e sim "há favorito fora do retrato" — o
+   * que também cobre o id colado no campo, o favorito que veio de outra aba e a linha que
+   * um ciclo com erro deixou para trás.
+   *
+   * Por isso não passa pelo lease: a aba que a pessoa está olhando não pode ficar esperando
+   * a aba líder, que pode estar congelada em segundo plano. O preço é um pedido pequeno a
+   * mais por aba aberta, e é ele que paga a linha completa na hora.
+   */
+  const pending =
+    // Retrato nenhum é o primeiro carregamento, e aí o ciclo da montagem já vai buscar
+    // todos — preencher aqui seria pedir a mesma lista duas vezes.
+    snapshot === null
+      ? []
+      : favorites.ids.filter(
+          (id) => !prices.has(id) && !missing.includes(id) && !asking.current.has(id),
+        );
+
+  // A dependência do efeito é a chave, e não o array: o retrato muda a cada ciclo, e sem a
+  // string estável o mesmo conjunto pendente pediria de novo a cada volta. O efeito remonta
+  // a lista a partir dela.
+  const pendingKey = pending.join(",");
+
+  useEffect(() => {
+    if (pendingKey === "") return;
+    const ids = pendingKey.split(",").map(Number);
+    // Marcados ANTES do pedido: favoritar oito itens seguidos são oito pedidos de um item,
+    // e não oito pedidos com a lista crescendo. Sem isto, cada clique refazia o anterior.
+    ids.forEach((id) => asking.current.add(id));
+
+    void batchPrices(ids, 1)
+      .then((res) => {
+        // Atualizador, e não valor: um ciclo pode ter escrito no meio do caminho, e o
+        // retrato dele é mais novo que o `snapshot` que este efeito viu nascer. Nada é
+        // cancelado por um pedido novo — dois preenchimentos em voo tratam de ids
+        // diferentes, e os dois têm o que acrescentar.
+        setSnapshot((prev) =>
+          prev === null
+            ? prev
+            : {
+                ...prev,
+                prices: [...prev.prices.filter((p) => !ids.includes(p.itemId)), ...res.prices],
+                missing: [...prev.missing.filter((id) => !ids.includes(id)), ...res.missing],
+              },
+        );
+      })
+      // Silencioso de propósito: `error` é o que o ciclo apurou sobre o mercado, e um
+      // preenchimento que falhou não muda isso. O ciclo seguinte traz o item de qualquer
+      // jeito, e enquanto isso a linha segue com o id, como antes.
+      .catch(() => {})
+      // A marca vale só pelo pedido em voo. Depois dele o próprio retrato já responde
+      // "este eu tenho" — e o item que for desfavoritado e favoritado de novo volta a ser
+      // pedido, em vez de ficar marcado para sempre.
+      .finally(() => ids.forEach((id) => asking.current.delete(id)));
+  }, [pendingKey, setSnapshot]);
 
   /**
    * O timer liga e desliga com "há favoritos?", e não com QUANTOS há.
