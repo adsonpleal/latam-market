@@ -991,9 +991,55 @@ tr:hover .copy,
   margin: 0;
 }
 
+.chart-plot {
+  position: relative;
+}
+
 .chart svg {
   width: 100%;
   height: auto;
+  display: block;
+  touch-action: pan-y;
+}
+
+.chart .chart-cursor {
+  stroke: var(--muted);
+  stroke-width: 1;
+  stroke-dasharray: 3 3;
+}
+
+.chart-tip {
+  position: absolute;
+  z-index: 2;
+  pointer-events: none;
+  padding: 6px 8px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  box-shadow: var(--shadow);
+  font-size: 0.72rem;
+  line-height: 1.4;
+  white-space: nowrap;
+}
+
+.chart-tip-when {
+  color: var(--muted);
+  margin-bottom: 3px;
+}
+
+.chart-tip-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.chart-tip-row i {
+  flex: none;
+}
+
+.chart-tip-row b {
+  margin-left: auto;
+  font-variant-numeric: tabular-nums;
 }
 
 .chart .grid {
@@ -1015,11 +1061,17 @@ tr:hover .copy,
   margin-top: 6px;
 }
 
-.chart-legend i {
-  display: inline-block;
+/* O mesmo traço de cor da série serve à legenda e ao cartão do hover; o que muda entre os
+   dois é só como cada um encaixa no seu contexto (texto corrido x linha flex). */
+.chart-legend i,
+.chart-tip-row i {
   width: 10px;
   height: 3px;
   border-radius: 2px;
+}
+
+.chart-legend i {
+  display: inline-block;
   vertical-align: middle;
 }
 
