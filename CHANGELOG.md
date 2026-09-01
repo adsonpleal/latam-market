@@ -3,6 +3,32 @@
 Mais recente primeiro. A seção do topo é a fonte do post de novidades no Discord
 (`tools/post-novidades.mjs`), então escreva pensando em quem vai ler lá.
 
+## 0.12.1 — 2026-09-01
+
+- **A busca já conhece os itens da atualização nova do cliente.** São 104 nomes que ela
+  ainda não achava — se você procurou por algum deles e voltou vazio, era só isso. O que
+  entrou, nos maiores blocos:
+  - **Sombrios do Esconderijo e do Furto** — greva, escudo, brinco e colar de cada uma das
+    duas linhas, mais a Caixa de Sombrios de Furto.
+  - **Pedras de encantamento** — Guerreiro, Mágico, Precisão e Variação, da 1 à 5.
+  - **Equipamentos -LT** — as Gáleas de Cinzas (Guerreira, Afiada, Mágica e Lutadora) e uma
+    leva de chapéus e acessórios, de Orelhinhas da Wickebine e Chapéu de Eddga a Marionete
+    de Thanatos, os Pingentes da Força Física e Mental e os Ventiladores.
+  - **Cordões e Capas Desconhecidas** — os seis Cordões (Ninja, Guerrilheiro, Asceta,
+    Mestre, Animista e Hiperaprendiz) e as seis Capas por atributo, com o Pacote, a Caixa e
+    a Alfaiataria que as distribuem.
+  - **Arcas e combos de refino** — Elunium e Oridecon Perfeito 2, Arca Enriquecida III,
+    Arca Perfeita II, Fundição 2, Carnium e Bradium P. 2 e os Combos de Minério.
+  - **Caixas de evento** — as três Caixas Abençoadas, o Artefato Oval do Passado, os pacotes
+    de agosto e as caixas de setembro (Vida, Sinos e Consumíveis).
+- **Trinta e dois itens mudaram de nome, e dois desses grupos você provavelmente já procurou
+  sem achar.** As comidas de evento que se chamavam exatamente como as normais — Língua no
+  Vapor, Sopa da Imortalidade, Tônico de Hwergelmir e as outras — agora vêm marcadas com
+  `[Evento]` e `[Especial]`, então dá para saber qual linha da busca é qual. E as caixas de
+  consumível passaram a dizer quanto vem dentro: "Caixa de Poção Branca [100]", "Caixa de
+  Semente de Yggdrasil [30]", "Caixa de Fruto de Yggdrasil [15]". De quebra, o Cupom de
+  Transferência agora se chama Transferidor de Encanto.
+
 ## 0.12.0 — 2026-08-31
 
 - **O gráfico de preço do item agora responde ao mouse.** Passe por cima e ele mostra a data
