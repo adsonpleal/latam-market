@@ -6,7 +6,7 @@
  * única coleta seria pior que não responder.
  */
 
-import type { DatabaseSync } from "node:sqlite";
+import type { Db } from "../store/port.js";
 
 import type { Server } from "./servers.js";
 
@@ -32,19 +32,30 @@ const MAX_DAYS = 90;
  */
 const memo = new Map<string, unknown>();
 
-function memoized<T>(kind: string, server: Server, args: unknown, compute: () => T): T {
+function memoized<T>(
+  kind: string,
+  server: Server,
+  args: unknown,
+  compute: () => Promise<T>,
+): Promise<T> {
   const cache = getCache(server);
   // O servidor entra na chave: sem ele, a primeira resposta de FREYA seria servida
   // para NIDHOGG e vice-versa — os ids de snapshot são de sequências independentes.
   const key = `${kind}:${server}:${cache.tradingSnapshotId}:${JSON.stringify(args)}`;
   const hit = memo.get(key);
-  if (hit !== undefined) return hit as T;
+  if (hit !== undefined) return hit as Promise<T>;
 
   // Uma coleta nova invalida tudo de uma vez: as chaves antigas carregam o id
   // anterior e nunca mais seriam consultadas.
   if (memo.size > 64) memo.clear();
 
-  const value = compute();
+  // Guarda a PROMESSA, não o valor resolvido: duas requisições simultâneas para o mesmo
+  // agregado passam a dividir uma consulta em vez de disparar duas. Uma rejeição sai do
+  // memo, senão o primeiro erro ficaria cacheado até a coleta seguinte.
+  const value = compute().catch((err: unknown) => {
+    memo.delete(key);
+    throw err;
+  });
   memo.set(key, value);
   return value;
 }
@@ -70,11 +81,21 @@ export interface MoversOptions {
   limit?: number;
 }
 
-export function topMovers(db: DatabaseSync, server: Server, opts: MoversOptions = {}): Mover[] {
-  return memoized("movers", server, opts, () => computeMovers(db, server, opts));
+export function topMovers(
+  db: Db,
+  server: Server,
+  opts: MoversOptions = {},
+): Promise<Mover[]> {
+  return memoized("movers", server, opts, () =>
+    computeMovers(db, server, opts),
+  );
 }
 
-function computeMovers(db: DatabaseSync, server: Server, opts: MoversOptions): Mover[] {
+async function computeMovers(
+  db: Db,
+  server: Server,
+  opts: MoversOptions,
+): Promise<Mover[]> {
   const days = Math.min(Math.max(opts.days ?? 7, 1), MAX_DAYS);
   const minStores = opts.minStores ?? 3;
   const minPrice = opts.minPrice ?? 1000;
@@ -86,9 +107,8 @@ function computeMovers(db: DatabaseSync, server: Server, opts: MoversOptions): M
 
   // Primeiro e último ponto diário de cada item dentro da janela. Fazer isso em SQL
   // evita trazer a série inteira de 5 mil itens só para pegar dois valores de cada.
-  const rows = db
-    .prepare(
-      `WITH bounds AS (
+  const rows = await db.all<Record<string, number>>(
+    `WITH bounds AS (
          SELECT item_id, MIN(day) AS first_day, MAX(day) AS last_day, COUNT(*) AS pts
            FROM listing_daily WHERE server = ? AND day >= ? GROUP BY item_id HAVING pts >= 2
        )
@@ -99,8 +119,14 @@ function computeMovers(db: DatabaseSync, server: Server, opts: MoversOptions): M
          JOIN listing_daily f ON f.server = ? AND f.item_id = b.item_id AND f.day = b.first_day
          JOIN listing_daily l ON l.server = ? AND l.item_id = b.item_id AND l.day = b.last_day
         WHERE l.listings >= ? AND f.median >= ? AND l.median >= ?`,
-    )
-    .all(server, from, server, server, minStores, minPrice, minPrice) as Array<Record<string, number>>;
+    server,
+    from,
+    server,
+    server,
+    minStores,
+    minPrice,
+    minPrice,
+  );
 
   const movers: Mover[] = [];
   for (const r of rows) {
@@ -113,7 +139,13 @@ function computeMovers(db: DatabaseSync, server: Server, opts: MoversOptions): M
     if (direction === "down" && changePct > 0) continue;
     const item = toBrief(server, r["item_id"]!);
     if (!item) continue;
-    movers.push({ item, now: value, before, changePct, stores: r["now_stores"]! });
+    movers.push({
+      item,
+      now: value,
+      before,
+      changePct,
+      stores: r["now_stores"]!,
+    });
   }
 
   movers.sort((a, b) => Math.abs(b.changePct) - Math.abs(a.changePct));
@@ -149,11 +181,19 @@ export interface DealsOptions {
  * contra a MEDIANA histórica, não contra o mínimo histórico — senão todo item cujo
  * dono errou o preço uma vez apareceria como pechincha para sempre.
  */
-export function findDeals(db: DatabaseSync, server: Server, opts: DealsOptions = {}): Deal[] {
+export function findDeals(
+  db: Db,
+  server: Server,
+  opts: DealsOptions = {},
+): Promise<Deal[]> {
   return memoized("deals", server, opts, () => computeDeals(db, server, opts));
 }
 
-function computeDeals(db: DatabaseSync, server: Server, opts: DealsOptions): Deal[] {
+async function computeDeals(
+  db: Db,
+  server: Server,
+  opts: DealsOptions,
+): Promise<Deal[]> {
   const days = Math.min(Math.max(opts.days ?? 14, 2), MAX_DAYS);
   const minDiscount = opts.minDiscountPct ?? 25;
   const minPrice = opts.minPrice ?? 5000;
@@ -162,12 +202,12 @@ function computeDeals(db: DatabaseSync, server: Server, opts: DealsOptions): Dea
 
   const from = Math.floor((Date.now() / 1000 - days * 86400) / 86400) * 86400;
   const usualByItem = new Map<number, number>();
-  const rows = db
-    .prepare(
-      `SELECT item_id, AVG(median) AS usual, COUNT(*) AS pts
-         FROM listing_daily WHERE server = ? AND day >= ? GROUP BY item_id HAVING pts >= 2`,
-    )
-    .all(server, from) as Array<Record<string, number>>;
+  const rows = await db.all<Record<string, number>>(
+    `SELECT item_id, AVG(median) AS usual, COUNT(*) AS pts
+       FROM listing_daily WHERE server = ? AND day >= ? GROUP BY item_id HAVING pts >= 2`,
+    server,
+    from,
+  );
   for (const r of rows) usualByItem.set(r["item_id"]!, r["usual"]!);
 
   const cache = getCache(server);

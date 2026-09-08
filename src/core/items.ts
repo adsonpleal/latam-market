@@ -29,14 +29,15 @@ import type { ItemBrief } from "./types.js";
 const categoryOf = (item: ItemRow): string | null => item.itemType ?? fallbackType(item.dbType);
 
 export function toBrief(server: Server, itemId: number): ItemBrief | null {
-  const item = getCache(server).items.get(itemId);
+  const cache = getCache(server);
+  const item = cache.items.get(itemId);
   if (!item) return null;
   return {
     itemId: item.itemId,
     name: item.name,
     slots: item.slots,
     type: categoryOf(item),
-    inMarket: item.inMarket,
+    inMarket: cache.inMarket.has(itemId),
     links: linksFor(item.itemId, item.name, server),
   };
 }
@@ -66,10 +67,7 @@ export function marketedIds(server: Server): { inMarket: number[]; forSale: numb
   const hit = idsMemo.get(cache);
   if (hit) return hit;
 
-  const inMarket: number[] = [];
-  for (const item of cache.items.values()) {
-    if (item.inMarket) inMarket.push(item.itemId);
-  }
+  const inMarket = [...cache.inMarket];
 
   // "Tem bucket de anúncios na coleta mais recente" é exatamente "está à venda agora" —
   // o mesmo critério que o filtro `for_sale` da busca usa.
@@ -275,7 +273,7 @@ export function searchItems(opts: SearchOptions): SearchResult {
    * ninguém o vende hoje é responder outra pergunta.
    */
   const isAvailable = (item: ItemRow): boolean => {
-    if (onlyInMarket && !item.inMarket) return false;
+    if (onlyInMarket && !cache.inMarket.has(item.itemId)) return false;
     // O cache guarda os anúncios da coleta mais recente, então "tem bucket" é
     // exatamente "está à venda agora" — sem tocar o disco.
     if (onlyForSale && !cache.listings.has(item.itemId)) return false;

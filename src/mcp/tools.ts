@@ -14,8 +14,8 @@
  *    agente afirma "custa X" com uma confiança que o dado não tem.
  */
 
-import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import type { DatabaseSync } from "node:sqlite";
+import type { McpServer } from "@modelcontextprotocol/server";
+import type { Db } from "../store/port.js";
 import { z } from "zod";
 
 import { appraise } from "../core/appraise.js";
@@ -42,11 +42,16 @@ import type { Server } from "../core/servers.js";
 import { serviceStatus } from "../core/status.js";
 import { EQUIP_SLOTS, ITEM_CATEGORIES } from "../core/taxonomy.js";
 
-import { config } from "../server/config.js";
+import { config } from "../config.js";
 import { json, jsonCompact, paged, registerJsonTool } from "./helpers.js";
 
-/** Rota que recebe o `.rrf` binário, sem o custo do base64. */
-const API_REPLAY_URL = `${config.publicUrl}/api/v1/replay`;
+/**
+ * Rota que recebe o `.rrf` binário, sem o custo do base64.
+ *
+ * Função, e não constante de módulo: `config.publicUrl` só existe depois de `applyEnv`,
+ * que no Worker roda dentro do `fetch` — muito depois de este módulo ser avaliado.
+ */
+export const replayUrl = (): string => `${config.publicUrl}/api/v1/replay`;
 
 /**
  * TODOS os schemas ficam no escopo do módulo.
@@ -65,7 +70,9 @@ const API_REPLAY_URL = `${config.publicUrl}/api/v1/replay`;
  */
 const itemRef = z
   .union([z.string(), z.number().int().positive()])
-  .describe("Id numérico do item ou parte do nome (acentos e maiúsculas são ignorados).");
+  .describe(
+    "Id numérico do item ou parte do nome (acentos e maiúsculas são ignorados).",
+  );
 
 const days = (fallback: number) =>
   z.number().int().min(1).max(365).optional().default(fallback);
@@ -73,145 +80,179 @@ const days = (fallback: number) =>
 const limit = (fallback: number, max = 100) =>
   z.number().int().min(1).max(max).optional().default(fallback);
 
-const SCHEMAS = {
-  search: {
-    query: z
-      .string()
-      .optional()
-      .describe(
-        'Texto livre, um id exato, ou uma lista de ids. "pocao" acha "Poção"; "501" acha ' +
-          'o item 501; "502,501" (vírgula ou espaço) devolve os dois na ordem digitada, ' +
-          "que é como comparar um punhado de itens sem uma chamada para cada. Id sempre " +
-          "aparece mesmo fora do mercado. Opcional quando há `tipo` ou `slot`.",
-      ),
-    tipo: z
-      .enum(ITEM_CATEGORIES.map((c) => c.id) as [string, ...string[]])
-      .optional()
-      .describe("Categoria do item. Combine com `slot` para restringir mais."),
-    slot: z
-      .enum(EQUIP_SLOTS.map((s) => s.id) as [string, ...string[]])
-      .optional()
-      .describe("Onde a peça é equipada. Só faz sentido para equipamento."),
-    incluirForaDoMercado: z
-      .boolean()
-      .optional()
-      .default(false)
-      .describe("Inclui itens do catálogo que nunca apareceram no mercado."),
-    aVendaAgora: z
-      .boolean()
-      .optional()
-      .default(false)
-      .describe(
-        "Só itens com anúncio ativo na coleta mais recente. Mais estreito que o " +
-          "anterior: aquele é 'já apareceu alguma vez', este é 'dá para comprar agora'.",
-      ),
-    // Quem ordena é o servidor, sobre o CONJUNTO — ordenar a página devolvida responderia
-    // "o mais barato destes vinte" com cara de "o mais barato". Por isso a opção existe
-    // aqui e não fica a cargo do agente reordenar o que recebeu.
-    ordenar: z
-      .enum(SEARCH_SORTS)
-      .optional()
-      .default("relevance")
-      .describe(
-        "Ordem do conjunto inteiro. `relevance` (padrão) é o casamento com o texto; " +
-          "`price` é a oferta mais barata de agora, `median` a mediana das lojas, " +
-          "`stores` quantas vendem, `units` quantas unidades há, `discount` o quanto a " +
-          "oferta está abaixo do histórico, `sold`/`market_avg`/`market_min`/`market_max` " +
-          "vêm do agregado do site, e `name`/`id` são a ordem óbvia. A resposta continua " +
-          "sem preço: peça os ids aqui e passe-os a `get_prices` se precisar dos números.",
-      ),
-    decrescente: z
-      .boolean()
-      .optional()
-      .default(false)
-      .describe(
-        "Inverte a ordem. Item sem o dado pedido fica no fim NOS DOIS SENTIDOS — o mais " +
-          "caro é o mais caro que alguém vende, não uma página de itens sem oferta.",
-      ),
-    limit: limit(20),
-    offset: z.number().int().min(0).optional().default(0),
-  },
-  getPrice: {
-    item: itemRef,
-    ofertas: z
-      .number()
-      .int()
-      .min(0)
-      .max(20)
-      .optional()
-      .default(5)
-      .describe("Quantas ofertas mais baratas incluir."),
-  },
-  getPrices: {
-    itens: z
-      .array(itemRef)
-      .min(1)
-      .max(
-        config.limits.maxBatchItems,
-        `no máximo ${config.limits.maxBatchItems} itens por chamada`,
-      )
-      .describe("Ids ou nomes. Cada um resolvido como em `get_price`; repetido conta uma vez."),
-    // Zero por padrão, ao contrário do `get_price`: cinco ofertas para um item cabem na
-    // resposta, cinco vezes cem não — o lote existe para caber, e quem quiser as lojas de
-    // um item específico chama `list_offers`. O teto acompanha o da rota REST.
-    ofertas: z
-      .number()
-      .int()
-      .min(0)
-      .max(DEFAULT_CHEAPEST)
-      .optional()
-      .default(0)
-      .describe("Quantas ofertas mais baratas incluir POR ITEM. Multiplica o tamanho da resposta."),
-  },
-  listOffers: { item: itemRef, limit: limit(20) },
-  history: {
-    item: itemRef,
-    dias: days(30),
-    agrupamento: z.enum(["hour", "day"]).optional(),
-  },
-  appraise: {
-    item: itemRef,
-    preco: z.number().int().positive().describe("Preço em zeny que se quer avaliar."),
-  },
-  movers: {
-    dias: days(7),
-    direcao: z.enum(["up", "down", "both"]).optional().default("both"),
-    minLojas: z
-      .number()
-      .int()
-      .min(1)
-      .optional()
-      .default(3)
-      .describe("Ignora itens com menos lojas que isso — variação de item ilíquido é ruído."),
-    minPreco: z.number().int().min(0).optional().default(1000),
-    limit: limit(20),
-  },
-  deals: {
-    dias: days(14),
-    minDesconto: z.number().int().min(1).max(99).optional().default(25),
-    minPreco: z.number().int().min(0).optional().default(5000),
-    limit: limit(20),
-  },
-  // O equivalente do `limit` de `GET /api/v1/snapshots`: a rota deixa escolher quantas
-  // coletas listar, e não havia motivo para o agente ficar preso num número fixo.
-  status: { coletas: limit(10, 50).describe("Quantas coletas recentes listar.") },
-  marketIds: {},
-  valueInventory: {
-    dados: z.string().describe("Conteúdo do arquivo .rrf codificado em base64."),
-    incluirEquipados: z
-      .boolean()
-      .optional()
-      .default(false)
-      .describe("Considera o equipamento em uso entre os candidatos a venda."),
-    minValor: z
-      .number()
-      .int()
-      .min(0)
-      .optional()
-      .default(10_000)
-      .describe("Valor mínimo para um item entrar na lista de candidatos a venda."),
-  },
-} as const;
+function buildSchemas() {
+  return {
+    search: {
+      query: z
+        .string()
+        .optional()
+        .describe(
+          'Texto livre, um id exato, ou uma lista de ids. "pocao" acha "Poção"; "501" acha ' +
+            'o item 501; "502,501" (vírgula ou espaço) devolve os dois na ordem digitada, ' +
+            "que é como comparar um punhado de itens sem uma chamada para cada. Id sempre " +
+            "aparece mesmo fora do mercado. Opcional quando há `tipo` ou `slot`.",
+        ),
+      tipo: z
+        .enum(ITEM_CATEGORIES.map((c) => c.id) as [string, ...string[]])
+        .optional()
+        .describe(
+          "Categoria do item. Combine com `slot` para restringir mais.",
+        ),
+      slot: z
+        .enum(EQUIP_SLOTS.map((s) => s.id) as [string, ...string[]])
+        .optional()
+        .describe("Onde a peça é equipada. Só faz sentido para equipamento."),
+      incluirForaDoMercado: z
+        .boolean()
+        .optional()
+        .default(false)
+        .describe("Inclui itens do catálogo que nunca apareceram no mercado."),
+      aVendaAgora: z
+        .boolean()
+        .optional()
+        .default(false)
+        .describe(
+          "Só itens com anúncio ativo na coleta mais recente. Mais estreito que o " +
+            "anterior: aquele é 'já apareceu alguma vez', este é 'dá para comprar agora'.",
+        ),
+      // Quem ordena é o servidor, sobre o CONJUNTO — ordenar a página devolvida responderia
+      // "o mais barato destes vinte" com cara de "o mais barato". Por isso a opção existe
+      // aqui e não fica a cargo do agente reordenar o que recebeu.
+      ordenar: z
+        .enum(SEARCH_SORTS)
+        .optional()
+        .default("relevance")
+        .describe(
+          "Ordem do conjunto inteiro. `relevance` (padrão) é o casamento com o texto; " +
+            "`price` é a oferta mais barata de agora, `median` a mediana das lojas, " +
+            "`stores` quantas vendem, `units` quantas unidades há, `discount` o quanto a " +
+            "oferta está abaixo do histórico, `sold`/`market_avg`/`market_min`/`market_max` " +
+            "vêm do agregado do site, e `name`/`id` são a ordem óbvia. A resposta continua " +
+            "sem preço: peça os ids aqui e passe-os a `get_prices` se precisar dos números.",
+        ),
+      decrescente: z
+        .boolean()
+        .optional()
+        .default(false)
+        .describe(
+          "Inverte a ordem. Item sem o dado pedido fica no fim NOS DOIS SENTIDOS — o mais " +
+            "caro é o mais caro que alguém vende, não uma página de itens sem oferta.",
+        ),
+      limit: limit(20),
+      offset: z.number().int().min(0).optional().default(0),
+    },
+    getPrice: {
+      item: itemRef,
+      ofertas: z
+        .number()
+        .int()
+        .min(0)
+        .max(20)
+        .optional()
+        .default(5)
+        .describe("Quantas ofertas mais baratas incluir."),
+    },
+    getPrices: {
+      itens: z
+        .array(itemRef)
+        .min(1)
+        .max(
+          config.limits.maxBatchItems,
+          `no máximo ${config.limits.maxBatchItems} itens por chamada`,
+        )
+        .describe(
+          "Ids ou nomes. Cada um resolvido como em `get_price`; repetido conta uma vez.",
+        ),
+      // Zero por padrão, ao contrário do `get_price`: cinco ofertas para um item cabem na
+      // resposta, cinco vezes cem não — o lote existe para caber, e quem quiser as lojas de
+      // um item específico chama `list_offers`. O teto acompanha o da rota REST.
+      ofertas: z
+        .number()
+        .int()
+        .min(0)
+        .max(DEFAULT_CHEAPEST)
+        .optional()
+        .default(0)
+        .describe(
+          "Quantas ofertas mais baratas incluir POR ITEM. Multiplica o tamanho da resposta.",
+        ),
+    },
+    listOffers: { item: itemRef, limit: limit(20) },
+    history: {
+      item: itemRef,
+      dias: days(30),
+      agrupamento: z.enum(["hour", "day"]).optional(),
+    },
+    appraise: {
+      item: itemRef,
+      preco: z
+        .number()
+        .int()
+        .positive()
+        .describe("Preço em zeny que se quer avaliar."),
+    },
+    movers: {
+      dias: days(7),
+      direcao: z.enum(["up", "down", "both"]).optional().default("both"),
+      minLojas: z
+        .number()
+        .int()
+        .min(1)
+        .optional()
+        .default(3)
+        .describe(
+          "Ignora itens com menos lojas que isso — variação de item ilíquido é ruído.",
+        ),
+      minPreco: z.number().int().min(0).optional().default(1000),
+      limit: limit(20),
+    },
+    deals: {
+      dias: days(14),
+      minDesconto: z.number().int().min(1).max(99).optional().default(25),
+      minPreco: z.number().int().min(0).optional().default(5000),
+      limit: limit(20),
+    },
+    // O equivalente do `limit` de `GET /api/v1/snapshots`: a rota deixa escolher quantas
+    // coletas listar, e não havia motivo para o agente ficar preso num número fixo.
+    status: {
+      coletas: limit(10, 50).describe("Quantas coletas recentes listar."),
+    },
+    marketIds: {},
+    valueInventory: {
+      dados: z
+        .string()
+        .describe("Conteúdo do arquivo .rrf codificado em base64."),
+      incluirEquipados: z
+        .boolean()
+        .optional()
+        .default(false)
+        .describe(
+          "Considera o equipamento em uso entre os candidatos a venda.",
+        ),
+      minValor: z
+        .number()
+        .int()
+        .min(0)
+        .optional()
+        .default(10_000)
+        .describe(
+          "Valor mínimo para um item entrar na lista de candidatos a venda.",
+        ),
+    },
+  } as const;
+}
+
+/**
+ * Montados uma vez por isolate, na primeira chamada.
+ *
+ * Continuam fora de `registerTools` pelo motivo medido acima, mas não podem mais ser
+ * uma constante de módulo: `getPrices` dimensiona o `.max()` por
+ * `config.limits.maxBatchItems`, e no Worker a configuração ainda não foi lida quando o
+ * módulo é avaliado. O memo preserva o ganho e conserta a ordem.
+ */
+let schemas: ReturnType<typeof buildSchemas> | null = null;
+const getSchemas = (): ReturnType<typeof buildSchemas> =>
+  (schemas ??= buildSchemas());
 
 /**
  * A mensagem de uma referência que não virou um item só.
@@ -240,7 +281,10 @@ function resolveOrThrow(server: Server, ref: string | number): number {
   throw new Error(resolutionProblem(ref, resolved));
 }
 
-export function registerTools(server: McpServer, db: DatabaseSync): void {
+export function registerTools(server: McpServer, db: Db): void {
+  const SCHEMAS = getSchemas();
+  const API_REPLAY_URL = replayUrl();
+
   // ---------------------------------------------------------------- busca
 
   registerJsonTool<{
@@ -280,7 +324,13 @@ export function registerTools(server: McpServer, db: DatabaseSync): void {
         onlyForSale: args.aVendaAgora ?? false,
       });
       return json({
-        ...paged("itens", result.total, result.items, args.offset ?? 0, (i) => i),
+        ...paged(
+          "itens",
+          result.total,
+          result.items,
+          args.offset ?? 0,
+          (i) => i,
+        ),
         freshness: freshness(market),
       });
     },
@@ -301,7 +351,14 @@ export function registerTools(server: McpServer, db: DatabaseSync): void {
       inputSchema: SCHEMAS.getPrice,
     },
     (args, market) =>
-      json({ ...itemPrice(market, resolveOrThrow(market, args.item), args.ofertas ?? 5), freshness: freshness(market) }),
+      json({
+        ...itemPrice(
+          market,
+          resolveOrThrow(market, args.item),
+          args.ofertas ?? 5,
+        ),
+        freshness: freshness(market),
+      }),
   );
 
   registerJsonTool<{ itens: Array<string | number>; ofertas?: number }>(
@@ -363,7 +420,11 @@ export function registerTools(server: McpServer, db: DatabaseSync): void {
     },
   );
 
-  registerJsonTool<{ item: string | number; dias?: number; agrupamento?: "hour" | "day" }>(
+  registerJsonTool<{
+    item: string | number;
+    dias?: number;
+    agrupamento?: "hour" | "day";
+  }>(
     server,
     "price_history",
     {
@@ -374,14 +435,20 @@ export function registerTools(server: McpServer, db: DatabaseSync): void {
         "serviço começou a coletar — não é o histórico completo do jogo.",
       inputSchema: SCHEMAS.history,
     },
-    (args, market) => {
+    async (args, market) => {
       const itemId = resolveOrThrow(market, args.item);
-      const points = history(db, market, { itemId, days: args.dias ?? 30, bucket: args.agrupamento });
+      const points = await history(db, market, {
+        itemId,
+        days: args.dias ?? 30,
+        bucket: args.agrupamento,
+      });
       return json({
         item: itemPrice(market, itemId, 0),
         pontos: points,
         ...(points.length <= 1
-          ? { aviso: "Ainda não há coletas suficientes para mostrar tendência." }
+          ? {
+              aviso: "Ainda não há coletas suficientes para mostrar tendência.",
+            }
           : {}),
       });
     },
@@ -399,8 +466,16 @@ export function registerTools(server: McpServer, db: DatabaseSync): void {
         "Não é previsão: os dados são do que está anunciado, não de vendas fechadas.",
       inputSchema: SCHEMAS.appraise,
     },
-    (args, market) =>
-      json({ ...appraise(db, market, resolveOrThrow(market, args.item), args.preco), freshness: freshness(market) }),
+    async (args, market) =>
+      json({
+        ...(await appraise(
+          db,
+          market,
+          resolveOrThrow(market, args.item),
+          args.preco,
+        )),
+        freshness: freshness(market),
+      }),
   );
 
   // ---------------------------------------------------------------- mercado
@@ -421,9 +496,9 @@ export function registerTools(server: McpServer, db: DatabaseSync): void {
         "Exige histórico acumulado; num banco recém-criado devolve lista vazia.",
       inputSchema: SCHEMAS.movers,
     },
-    (args, market) =>
+    async (args, market) =>
       json({
-        variacoes: topMovers(db, market, {
+        variacoes: await topMovers(db, market, {
           days: args.dias,
           direction: args.direcao,
           minStores: args.minLojas,
@@ -434,7 +509,12 @@ export function registerTools(server: McpServer, db: DatabaseSync): void {
       }),
   );
 
-  registerJsonTool<{ dias?: number; minDesconto?: number; minPreco?: number; limit?: number }>(
+  registerJsonTool<{
+    dias?: number;
+    minDesconto?: number;
+    minPreco?: number;
+    limit?: number;
+  }>(
     server,
     "find_deals",
     {
@@ -444,9 +524,9 @@ export function registerTools(server: McpServer, db: DatabaseSync): void {
         "Compara a oferta mais barata de agora com a mediana histórica do item.",
       inputSchema: SCHEMAS.deals,
     },
-    (args, market) =>
+    async (args, market) =>
       json({
-        pechinchas: findDeals(db, market, {
+        pechinchas: await findDeals(db, market, {
           days: args.dias,
           minDiscountPct: args.minDesconto,
           minPrice: args.minPreco,
@@ -466,7 +546,8 @@ export function registerTools(server: McpServer, db: DatabaseSync): void {
         "como se fosse o de agora — e sempre que a pessoa perguntar se o dado está atualizado.",
       inputSchema: SCHEMAS.status,
     },
-    (args, market) => json(serviceStatus(db, market, args.coletas ?? 10)),
+    async (args, market) =>
+      json(await serviceStatus(db, market, args.coletas ?? 10)),
   );
 
   registerJsonTool<Record<string, never>>(
@@ -489,12 +570,17 @@ export function registerTools(server: McpServer, db: DatabaseSync): void {
     // Sem `nextTradingAt`, como no `get_prices`: o campo é para um cliente dormir até a
     // coleta seguinte, e o agente não fica esperando — `data_status` responde a mesma
     // pergunta na hora em que ela é feita.
-    (args, market) => jsonCompact({ ...marketedIds(market), freshness: freshness(market) }),
+    (args, market) =>
+      jsonCompact({ ...marketedIds(market), freshness: freshness(market) }),
   );
 
   // ---------------------------------------------------------------- replay
 
-  registerJsonTool<{ dados: string; incluirEquipados?: boolean; minValor?: number }>(
+  registerJsonTool<{
+    dados: string;
+    incluirEquipados?: boolean;
+    minValor?: number;
+  }>(
     server,
     "value_inventory",
     {
@@ -529,10 +615,16 @@ export function registerTools(server: McpServer, db: DatabaseSync): void {
     (args, market) => {
       const bytes = Buffer.from(args.dados, "base64");
       if (bytes.length < 112) {
-        throw new Error("base64 não contém um replay válido (arquivo pequeno demais).");
+        throw new Error(
+          "base64 não contém um replay válido (arquivo pequeno demais).",
+        );
       }
-      const valuation = valueReplay(market, 
-        bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer,
+      const valuation = valueReplay(
+        market,
+        bytes.buffer.slice(
+          bytes.byteOffset,
+          bytes.byteOffset + bytes.byteLength,
+        ) as ArrayBuffer,
       );
       return json({
         ...valuation,

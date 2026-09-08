@@ -1,7 +1,7 @@
 name: Deploy
 
-# Um deploy por push na main. O serviço é um bundle só, então não há motivo para
-# filtrar por caminho: qualquer mudança em src/, data/ ou infra/ muda o que roda.
+# Um deploy por push na main. Um Worker só serve a API, o MCP e a interface, então não há
+# motivo para filtrar por caminho: qualquer mudança em src/, web/ ou data/ muda o que roda.
 on:
   push:
     branches: [main]
@@ -14,8 +14,8 @@ concurrency:
 jobs:
   deploy:
     runs-on: ubuntu-latest
-    # Necessária para empurrar a tag `anunciado-v*` que registra o que já foi
-    # publicado no Discord.
+    # Necessária para empurrar a tag `anunciado-v*` que registra o que já foi publicado
+    # no Discord.
     permissions:
       contents: write
     steps:
@@ -31,122 +31,64 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          # `node:sqlite` sem flag experimental e worker_threads estáveis.
           node-version: 22
           cache: pnpm
 
       - run: pnpm install --frozen-lockfile
 
       - name: Typecheck
-        run: pnpm typecheck
+        run: |
+          pnpm typecheck
+          pnpm --filter web typecheck
 
-      # A suíte inclui a paridade entre API e MCP e o teste do parser contra um
-      # replay real. Se qualquer um quebrar, nada sobe.
+      # Duas suítes: `node` para a lógica pura, `workers` para o que só tem sentido dentro
+      # do runtime de produção — a paridade entre API e MCP, a ingestão e o cache de borda.
+      # Se qualquer uma quebrar, nada sobe.
       - name: Testes
-        run: pnpm test
-
-      - name: Build
-        run: pnpm build
-
-      - name: Empacotar
         run: |
-          mkdir -p stage/data
-          cp dist/server.mjs dist/*-worker.js stage/
-          cp -r infra stage/
-          cp data/latam-items.json stage/data/
-          # Sanidade antes de mandar: um tar sem o catálogo sobe, mas o serviço
-          # responde um mercado vazio, o que é pior que falhar aqui.
-          test -s stage/server.mjs
-          test -s stage/data/latam-items.json
-          tar -czf latam-market.tar.gz -C stage .
-          ls -lh latam-market.tar.gz
+          pnpm test
+          pnpm --filter web test
 
-      - name: Configurar SSH
-        env:
-          EC2_SSH_KEY: ${{ secrets.EC2_SSH_KEY }}
-          EC2_HOST: ${{ secrets.EC2_HOST }}
+      - name: Build da interface
         run: |
-          mkdir -p ~/.ssh
-          printf '%s\n' "$EC2_SSH_KEY" > ~/.ssh/deploy.pem
-          chmod 600 ~/.ssh/deploy.pem
-          ssh-keyscan -H "$EC2_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+          pnpm --filter web build
+          # DEPOIS do vite build, que limpa o dist: é o catálogo que o Worker hidrata.
+          pnpm catalogue
 
-      - name: Enviar e reiniciar
-        env:
-          EC2_HOST: ${{ secrets.EC2_HOST }}
+      - name: Conferir os artefatos
         run: |
-          scp -i ~/.ssh/deploy.pem latam-market.tar.gz "ubuntu@$EC2_HOST:~/"
-          ssh -i ~/.ssh/deploy.pem "ubuntu@$EC2_HOST" '
-            set -e
-            # Extrai num diretório de espera primeiro: um envio truncado nunca pode
-            # deixar /opt/latam-market com um bundle pela metade.
-            rm -rf ~/latam-market-next && mkdir -p ~/latam-market-next
-            tar -xzf ~/latam-market.tar.gz -C ~/latam-market-next
-            test -s ~/latam-market-next/server.mjs
-            test -s ~/latam-market-next/data/latam-items.json
+          test -s web/dist/index.html
+          ls web/dist/assets/*.js >/dev/null
+          ls web/dist/generated/catalogue.*.json >/dev/null
+          ls web/dist/generated/descriptions.*.json >/dev/null
+          # Os pré-comprimidos sumiram junto com o Caddy: a Cloudflare comprime na entrega,
+          # e mantê-los seria servir arquivo morto com o Content-Type errado.
+          ! ls web/dist/**/*.br >/dev/null 2>&1
 
-            # --delete limpa restos de builds antigos. O BANCO NÃO ESTÁ AQUI: ele mora
-            # em /var/lib/latam-market/market.db justamente por causa desta linha.
-            sudo rsync -a --delete ~/latam-market-next/ /opt/latam-market/
-            sudo chown -R ubuntu:ubuntu /opt/latam-market
-            chmod +x /opt/latam-market/infra/smoke.sh /opt/latam-market/infra/apply-caddy-fragment.sh \
-              /opt/latam-market/infra/apply-unit.sh
-            rm -rf ~/latam-market-next ~/latam-market.tar.gz
+      # ANTES do deploy, e é a ordem que importa: entre este passo e o próximo o Worker
+      # antigo ainda está no ar, então uma migração tem que ser compatível com ele.
+      - name: Migrações do D1
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          command: d1 migrations apply latam-market --remote
 
-            # A unit vive em /etc/systemd/system/, fora do alcance do rsync acima, então
-            # uma mudança em `Environment=` (uma origem nova na allowlist, digamos) subia
-            # o código novo com o ambiente antigo. No-op quando a unit não mudou.
-            /opt/latam-market/infra/apply-unit.sh
+      - name: Publicar o Worker
+        id: deploy
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          command: deploy
 
-            sudo systemctl restart latam-market
-          '
-
-      # O fragmento do Caddy é o único pedaço de infra que o rsync acima NÃO ativa: ele
-      # mora em /etc/caddy/conf.d/, fora de /opt. Era copiado à mão, e a janela entre o
-      # push e a cópia deixou a raiz em 404 na 0.3.0 — o serviço subiu com a interface
-      # nova e o Caddy continuou mandando `/` para o Node. A lógica vive no script (como
-      # a do smoke), não aqui, para poder ser lida e rodada à mão na máquina.
-      - name: Aplicar o fragmento do Caddy
-        env:
-          EC2_HOST: ${{ secrets.EC2_HOST }}
-        run: |
-          ssh -i ~/.ssh/deploy.pem "ubuntu@$EC2_HOST" \
-            '/opt/latam-market/infra/apply-caddy-fragment.sh'
-
+      # As mesmas checagens de contrato de sempre — healthz, catálogo carregado, MCP, REST
+      # e a raiz servindo HTML —, agora contra o Worker. `BASE` é variável porque até o
+      # cutover o Worker vive só em *.workers.dev; depois passa a ser o domínio.
       - name: Verificar
         env:
-          EC2_HOST: ${{ secrets.EC2_HOST }}
-        run: |
-          BASE=https://mercado.latam-tools.com.br
-
-          # O boot carrega o catálogo e monta o cache antes de escutar, então dar
-          # alguns segundos é esperado — não é sinal de problema.
-          for i in $(seq 1 15); do
-            code=$(curl -s -o /dev/null -w '%{http_code}' "$BASE/healthz" || true)
-            [ "$code" = "200" ] && break
-            echo "healthz -> $code, tentativa $i"; sleep 3
-          done
-          curl -sf "$BASE/healthz" | tee /dev/stderr >/dev/null
-
-          # As mesmas checagens que rodam depois de um reload do Caddy e a cada deploy
-          # da interface — healthz, catálogo carregado, MCP e REST.
-          bash infra/smoke.sh "$BASE"
-
-          # O journal ajuda a entender um deploy que passou mas subiu estranho. Só que
-          # ESTE LOG É PÚBLICO, e o journal desta unit não traz só as nossas linhas:
-          #
-          # linhas do componente de coleta, com endereços de rede e o IP da máquina; e
-          # linhas de `sudo`, com o caminho e os argumentos do que ele executa — essas caem
-          # aqui porque rodam no cgroup desta unit.
-          #
-          # Daí ser um ALLOWLIST dos prefixos que são deste serviço, e não um denylist do que
-          # esconder: um denylist dos prefixos do coletor deixaria passar exatamente aquelas
-          # linhas do sudo, que ninguém pensaria em listar. O que é nosso a gente conhece; o
-          # que o outro lado vai imprimir amanhã, não.
-          #
-          # Sai vazio quando o boot já rolou para fora da janela — daí o `|| true`.
-          ssh -i ~/.ssh/deploy.pem "ubuntu@$EC2_HOST" \
-            'journalctl -u latam-market --no-pager -n 40 | grep -E "\[(boot|crawl|retenção)\]" || true'
+          BASE: ${{ vars.DEPLOY_BASE_URL }}
+        run: bash infra/smoke.sh "$BASE"
 
       # A referência é a última versão ANUNCIADA, não a do commit anterior.
       #

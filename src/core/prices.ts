@@ -10,7 +10,7 @@
  * contrário (anunciado agora, nunca vendido).
  */
 
-import type { DatabaseSync } from "node:sqlite";
+import type { Db } from "../store/port.js";
 
 import type { Server } from "./servers.js";
 import { getCache } from "../store/cache.js";
@@ -208,11 +208,11 @@ export interface HistoryOptions {
  * As duas fontes entram na mesma linha do tempo mas em campos separados, porque
  * medem coisas diferentes. Um ponto pode ter só um dos lados preenchido.
  */
-export function history(
-  db: DatabaseSync,
+export async function history(
+  db: Db,
   server: Server,
   opts: HistoryOptions,
-): HistoryPoint[] {
+): Promise<HistoryPoint[]> {
   const days = Math.min(Math.max(opts.days ?? 30, 1), 730);
   const bucket = opts.bucket ?? (days <= 3 ? "hour" : "day");
   const to = Math.floor(Date.now() / 1000);
@@ -225,13 +225,13 @@ export function history(
     return p;
   };
 
-  for (const p of priceHistory(db, server, opts.itemId, from, to)) {
+  for (const p of await priceHistory(db, server, opts.itemId, from, to)) {
     const point = at(bucket === "day" ? Math.floor(p.ts / 86400) * 86400 : p.ts);
     point.marketAvg = p.avgPrice;
     point.marketMin = p.minPrice;
   }
 
-  for (const s of listingHistory(db, server, opts.itemId, from, to, bucket)) {
+  for (const s of await listingHistory(db, server, opts.itemId, from, to, bucket)) {
     const point = at(s.ts);
     point.offerMin = s.minPrice;
     point.offerMedian = s.median;

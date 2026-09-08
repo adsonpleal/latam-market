@@ -12,7 +12,14 @@ packages:
 # ERR_PNPM_IGNORED_BUILDS and every later `pnpm test`/`pnpm build` fails on the install
 # check that runs before the script itself.
 allowBuilds:
+  # Dependencia transitiva do `agents`. O postinstall dele so imprime um pedido de doacao;
+  # negar explicitamente e o que tira o ERR_PNPM_IGNORED_BUILDS sem dar direito de execucao
+  # a um pacote que nao precisa dele.
+  core-js-pure: false
   esbuild: true
+  # workerd e o runtime dos Workers em si: o postinstall baixa o binario da plataforma.
+  # Sem ele, `wrangler dev` e os testes que rodam dentro do workerd nao sobem.
+  workerd: true
 
 # O pnpm segura pacotes publicados há pouco tempo, como defesa contra um pacote
 # comprometido que acabou de subir. O rrfparser é nosso e foi publicado agora, então

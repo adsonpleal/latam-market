@@ -1,0 +1,67 @@
+# O que sobrou na EC2: agenda o coletor e manda o resultado para o Worker.
+#
+# Instalar em /etc/systemd/system/latam-market-shipper.service, depois:
+#   systemctl daemon-reload && systemctl enable --now latam-market-shipper
+#
+# Substitui a `latam-market.service`, que servia API + MCP + agendador. A API e o MCP são
+# do Worker agora; o banco também. O que continua aqui é só o que precisa da saída de rede
+# que o coletor administra — e é por isso que este processo existe, em vez de um Cron
+# Trigger.
+#
+# Provisionamento manual necessário uma vez (o deploy NÃO faz):
+#   install -d -o ubuntu -g ubuntu /opt/latam-market-shipper
+#   systemctl edit latam-market-shipper   # para pôr o INGEST_SECRET fora do repositório
+#
+# O coletor traz o próprio drop-in em /etc/systemd/system/latam-market-shipper.service.d/
+# com o que ele precisa (inclusive relaxar as restrições daqui) e aponta COLLECTOR_PATH.
+# Sem ele, este serviço sobe, não acha coletor e não coleta nada — estado válido.
+
+[Unit]
+Description=latam-market — coleta e envio para o Worker
+After=network-online.target
+Wants=network-online.target
+
+# Ficam em [Unit], não em [Service]: o systemd ignora com aviso se postos no lugar errado.
+# O agendador espalha as coletas com jitter, então um restart em laço não vira rajada
+# contra o site; ainda assim, limitar o laço é barato.
+StartLimitBurst=5
+StartLimitIntervalSec=120
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/opt/latam-market-shipper
+
+Environment=NODE_ENV=production
+Environment=PUBLIC_URL=https://mercado.latam-tools.com.br
+Environment=CRAWL_ENABLED=1
+# ⚠ O INGEST_SECRET NÃO fica aqui: este arquivo é público. Vai por
+# `systemctl edit latam-market-shipper`, num drop-in fora do repositório, e tem que ser o
+# mesmo valor de `wrangler secret put INGEST_SECRET`.
+# Environment=INGEST_SECRET=...
+# Environment=INGEST_URL=https://mercado.latam-tools.com.br/internal/ingest
+
+ExecStart=/usr/bin/node /opt/latam-market-shipper/dist/shipper.mjs
+
+Restart=always
+RestartSec=5
+
+# Máquina compartilhada: um vazamento aqui não pode derrubar os vizinhos. O teto caiu de
+# 256M para 192M porque o cache do mercado inteiro saiu daqui — o pico agora é a coleta
+# acumulada em memória antes do POST, uns poucos MB.
+MemoryMax=192M
+CPUWeight=50
+IOWeight=50
+Nice=5
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=full
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=latam-market-shipper
+
+[Install]
+WantedBy=multi-user.target

@@ -13,3 +13,16 @@ data/*.db-shm
 # Gerados por web/scripts/build-catalogue.mjs a partir de data/latam-items.json.
 web/public/generated/
 web/src/generated/
+
+# Gerado por src/cli/build-catalogue-asset.ts (URL com hash do catálogo do Worker).
+src/generated/
+
+# Gerado por `wrangler types` a partir do wrangler.jsonc. Como os outros gerados deste
+# repositorio, e refeito por pre-hook em vez de versionado.
+worker-configuration.d.ts
+
+# Estado local do wrangler (D1/R2 de desenvolvimento, cache do workerd).
+.wrangler/
+
+# Segredos do `wrangler dev` (o de producao vai por `wrangler secret put`).
+.dev.vars

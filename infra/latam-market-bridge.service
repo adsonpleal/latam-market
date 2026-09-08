@@ -1,0 +1,50 @@
+# A ponte da fase de escrita dupla: leva cada coleta do SQLite local para o Worker.
+#
+# Instalar junto com o timer:
+#   sudo cp infra/latam-market-bridge.{service,timer} /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now latam-market-bridge.timer
+#
+# NÃO coleta. Quem fala com o coletor continua sendo o `latam-market.service` — dois
+# coletores ao mesmo tempo dividiriam a paciência de rede que o coletor administra sozinho.
+# A ponte só lê o banco (somente-leitura, seguro com o WAL de quem escreve) e empurra a
+# coleta mais recente de cada (dataset, servidor).
+#
+# É TEMPORÁRIA. Existe para os dois lados receberem toda coleta enquanto o domínio ainda
+# aponta para cá, o que é o que mantém a EC2 como alvo de rollback atualizado. Sai de cena
+# junto com o `latam-market.service`, quando o `latam-market-shipper.service` — que coleta e
+# empurra, sem SQLite no meio — assumir.
+#
+# Reenviar é de graça: o `crawlId` é preso ao id do snapshot de origem, então a ingestão
+# reencontra o que já entrou e não faz nada. Por isso é um timer burro em vez de um serviço
+# com estado.
+
+[Unit]
+Description=latam-market — ponte do SQLite local para o Worker
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=ubuntu
+WorkingDirectory=/opt/latam-market-bridge
+
+Environment=INGEST_URL=https://latam-market.adsonpleal.workers.dev/internal/ingest
+# ⚠ O INGEST_SECRET NÃO fica aqui: este arquivo é público. Vai por
+# `sudo systemctl edit latam-market-bridge`, e tem que ser o mesmo valor de
+# `wrangler secret put INGEST_SECRET`.
+
+ExecStart=/usr/bin/node /opt/latam-market-bridge/bridge.mjs /var/lib/latam-market/market.db
+
+# Máquina compartilhada, e isto roda de cinco em cinco minutos ao lado de quatro serviços.
+Nice=10
+IOSchedulingClass=idle
+MemoryMax=192M
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=read-only
+ProtectSystem=full
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=latam-market-bridge

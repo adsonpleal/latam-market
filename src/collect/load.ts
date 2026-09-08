@@ -15,7 +15,7 @@
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
-import { config } from "../server/config.js";
+import { config } from "../config.js";
 import type { Collector, CollectorModule } from "./port.js";
 
 /**

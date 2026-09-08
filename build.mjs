@@ -1,10 +1,13 @@
 /**
- * Empacota o servidor num único ESM autocontido.
+ * Empacota o SHIPPER num único ESM autocontido.
  *
- * O deploy é "um arquivo e os dados ao lado", copiado por scp — sem node_modules no
- * servidor, sem passo de build lá. Os JSON de dados NÃO são embutidos: 6,6 MB de
- * literais de objeto em JavaScript parseiam mais devagar que o JSON equivalente e
- * ficariam retidos duas vezes na memória.
+ * O que este build produz encolheu junto com o que ainda roda no EC2: a API, o MCP e a
+ * interface são do Worker agora, publicados por `wrangler deploy`, e não passam por aqui.
+ * Sobrou o processo que agenda o coletor e manda o resultado para `/internal/ingest`.
+ *
+ * O deploy dele continua sendo "um arquivo, copiado por scp" — sem node_modules no
+ * servidor, sem passo de build lá. O catálogo também não vem mais junto: quem precisa dele
+ * é a busca, que mora no Worker e o recebe como asset estático.
  */
 
 import { rm } from "node:fs/promises";
@@ -28,23 +31,30 @@ const shared = {
   logLevel: "info",
 };
 
-const server = await esbuild.build({
+/**
+ * A ponte da fase de escrita dupla.
+ *
+ * Enquanto o serviço antigo continua coletando e servindo (para ser um alvo de rollback
+ * atualizado), ele é quem fala com o coletor — dois coletores ao mesmo tempo dividiriam a
+ * paciência de rede que o coletor administra sozinho. Então a ponte não coleta: ela LÊ o
+ * SQLite local, em modo somente-leitura, e empurra a coleta mais recente para o Worker.
+ *
+ * É o mesmo binário do bootstrap, e de propósito: a carga inicial e a ponte fazem a mesma
+ * coisa, e o `crawlId` preso ao id do snapshot faz reenviar o que já foi ser um no-op.
+ * Sai de cena junto com o serviço antigo.
+ */
+const bridge = await esbuild.build({
   ...shared,
-  entryPoints: [resolve(root, "src/server/index.ts")],
-  outfile: resolve(root, "dist/server.mjs"),
+  entryPoints: [resolve(root, "src/cli/bootstrap-blob.ts")],
+  outfile: resolve(root, "dist/bridge.mjs"),
+});
+
+const shipper = await esbuild.build({
+  ...shared,
+  entryPoints: [resolve(root, "src/shipper/index.ts")],
+  outfile: resolve(root, "dist/shipper.mjs"),
   metafile: true,
 });
 
-// Os workers são arquivos à parte porque `new Worker()` carrega por caminho: se
-// fossem para dentro do bundle principal, o caminho não existiria em runtime. Os
-// nomes têm que bater com o que `scheduler.ts` resolve em `workerPath()`.
-for (const worker of ["crawl-worker", "retention-worker"]) {
-  await esbuild.build({
-    ...shared,
-    entryPoints: [resolve(root, `src/worker/${worker}.ts`)],
-    outfile: resolve(root, `dist/${worker}.js`),
-  });
-}
-
-const bytes = Object.values(server.metafile.outputs).reduce((sum, o) => sum + o.bytes, 0);
-console.log(`dist/server.mjs empacotado (${(bytes / 1024 / 1024).toFixed(2)} MB com sourcemap)`);
+const bytes = Object.values(shipper.metafile.outputs).reduce((sum, o) => sum + o.bytes, 0);
+console.log(`dist/shipper.mjs empacotado (${(bytes / 1024).toFixed(0)} KB com sourcemap)`);

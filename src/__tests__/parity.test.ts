@@ -1,32 +1,35 @@
 /**
  * A API e o MCP têm que responder a mesma coisa.
  *
- * Este teste é o que sustenta a regra "api/ e mcp/ só chamam core/". Nada impede
- * alguém de, com pressa, montar uma consulta direto dentro de um handler; o que
- * impede é isto quebrar quando ele fizer.
+ * Este teste é o que sustenta a regra "api/ e mcp/ só chamam core/". Nada impede alguém
+ * de, com pressa, montar uma consulta direto dentro de um handler; o que impede é isto
+ * quebrar quando ele fizer.
+ *
+ * Roda DENTRO do `workerd`, pelo mesmo `worker.ts` que é publicado, com D1 e R2 locais.
+ * O andaime (semeadura pela rota de ingestão, chamadas ao MCP, helpers de host) está em
+ * `parity-setup.ts`.
  */
 
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
-import { request as httpRequest } from "node:http";
-import { tmpdir } from "node:os";
-import { resolve } from "node:path";
-import type { AddressInfo } from "node:net";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { SELF } from "cloudflare:test";
+import { beforeAll, describe, expect, it } from "vitest";
 
-import { openDb, transact } from "../store/db.js";
-import { refreshCache } from "../store/cache.js";
-import { beginSnapshot, finishSnapshot, rollupListings, writeRows } from "../store/write.js";
-import { createHttpServer } from "../server/http.js";
-import { config } from "../server/config.js";
 import { nextTradingRun } from "../core/schedule.js";
+import { config } from "../config.js";
 import type { MarketPriceRow, TradingRow } from "../store/rows.js";
-
-const dir = mkdtempSync(resolve(tmpdir(), "latam-market-test-"));
-const dbPath = resolve(dir, "test.db");
-const db = openDb({ path: dbPath });
-
-let baseUrl: string;
-let server: ReturnType<typeof createHttpServer>;
+import {
+  applyMigrations,
+  callTool,
+  getJson,
+  getResponse,
+  ingest,
+  ingestUnsigned,
+  ORIGIN,
+  listTools,
+  replayFixture,
+  statusFromHost,
+  toBase64,
+  type ToolInfo,
+} from "./parity-setup.js";
 
 const ITEM_ID = 501;
 /** Visto no mercado um dia, sem anúncio hoje: a diferença entre os dois filtros. */
@@ -43,145 +46,102 @@ const SOLD_OUT = 909;
  */
 const KAFRA_ITEM = 11568;
 const CLAN_ITEM = 12580;
+/** Poção Laranja: casa com `q=pocao` e tem oferta. */
+const CARA = 502;
+/** Poção Amarela: casa com a busca, foi vista no mercado, e não tem oferta agora. */
+const SEM_OFERTA = 503;
 
-function seed(): void {
-  // O catálogo é do jogo; "visto no mercado" é por servidor (schema v3).
-  db.prepare(`INSERT INTO item (item_id, name, name_norm) VALUES (?, ?, ?)`).run(
-    ITEM_ID,
-    "Poção Vermelha",
-    "pocao vermelha",
-  );
-  db.prepare(
-    `INSERT INTO item_market (item_id, server, in_market) VALUES (?, 'FREYA', 1)`,
-  ).run(ITEM_ID);
-
-  const market = beginSnapshot(db, "market-price", "FREYA", "import", 1_700_000_000);
-  writeRows(db, market, [
-    {
-      itemId: ITEM_ID, itemName: "Poção Vermelha",
-      databaseImgPath: null, databaseType: "healing",
-      totalItemCnt: 5000, minItemPrice: 40, maxItemPrice: 120, avgItemPrice: 60,
-    } satisfies MarketPriceRow,
-  ]);
-  finishSnapshot(db, market.id, "market-price");
-
-  const trading = beginSnapshot(db, "trading", "FREYA", "import", 1_700_000_100);
-  writeRows(db, trading, [
-    ...[50, 55, 70, 90].map(
-      (price, i) =>
-        ({
-          itemId: ITEM_ID, mapId: 1, ssi: `ssi-${i}`, itemName: "Poção Vermelha",
-          databaseImgPath: null, databaseType: "healing",
-          storeName: `Loja ${i}`, itemPrice: price, itemCnt: 10, slotMaxCount: "",
-          storeTypeName: "BUY", itemSellerCharName: `Vendedor${i}`,
-        }) satisfies TradingRow,
-    ),
-    ...[KAFRA_ITEM, CLAN_ITEM].flatMap((itemId) =>
-      [500, 550].map(
-        (price, i) =>
-          ({
-            itemId, mapId: 1, ssi: `arm-${itemId}-${i}`, itemName: `Item ${itemId}`,
-            databaseImgPath: null, databaseType: "etc",
-            storeName: `Loja A${i}`, itemPrice: price, itemCnt: 20, slotMaxCount: "",
-            storeTypeName: "BUY", itemSellerCharName: `VendedorA${i}`,
-          }) satisfies TradingRow,
-      ),
-    ),
-  ]);
-  rollupListings(db, trading);
-  transact(db, () => finishSnapshot(db, trading.id, "trading"));
-  refreshCache(db, "FREYA");
-}
-
-/** O mesmo item, com outro preço, em NIDHOGG — para provar que os dois não se misturam. */
-function seedNidhogg(): void {
-  db.prepare(
-    `INSERT INTO item_market (item_id, server, in_market) VALUES (?, 'NIDHOGG', 1)`,
-  ).run(ITEM_ID);
-
-  const trading = beginSnapshot(db, "trading", "NIDHOGG", "import", 1_700_000_200);
-  writeRows(
-    db,
-    trading,
-    [900, 950].map(
-      (price, i) =>
-        ({
-          itemId: ITEM_ID, mapId: 1, ssi: `nid-${i}`, itemName: "Poção Vermelha",
-          databaseImgPath: null, databaseType: "healing",
-          storeName: `Loja N${i}`, itemPrice: price, itemCnt: 3, slotMaxCount: "",
-          storeTypeName: "BUY", itemSellerCharName: `VendedorN${i}`,
-        }) satisfies TradingRow,
-    ),
-  );
-  rollupListings(db, trading);
-  transact(db, () => finishSnapshot(db, trading.id, "trading"));
-  refreshCache(db, "NIDHOGG");
-}
-
-/** Chama uma ferramenta do MCP e devolve o JSON que ela produziu. */
-async function callTool(name: string, args: Record<string, unknown>): Promise<unknown> {
-  const res = await fetch(`${baseUrl}/mcp`, {
-    method: "POST",
-    headers: { "content-type": "application/json", accept: "application/json, text/event-stream" },
-    body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name, arguments: args } }),
-  });
-  const body = (await res.json()) as { result?: { content: Array<{ text: string }> } };
-  if (!body.result) throw new Error(`chamada a ${name} falhou: ${JSON.stringify(body)}`);
-  return JSON.parse(body.result.content[0]!.text);
-}
-
-interface ToolInfo {
-  name: string;
-  description: string;
-  inputSchema: { properties: Record<string, { description?: string }> };
-}
-
-/** O catálogo de ferramentas que o MCP publica — nomes, descrições e schemas. */
-async function listTools(): Promise<ToolInfo[]> {
-  const res = await fetch(`${baseUrl}/mcp`, {
-    method: "POST",
-    headers: { "content-type": "application/json", accept: "application/json, text/event-stream" },
-    body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }),
-  });
-  const body = (await res.json()) as { result: { tools: ToolInfo[] } };
-  return body.result.tools;
-}
-
-const getJson = async (path: string): Promise<unknown> =>
-  (await fetch(`${baseUrl}${path}`)).json();
-
-/**
- * Requisição crua, só para poder forjar o cabeçalho `Host`.
- *
- * `fetch` trata `host` como cabeçalho proibido e o sobrescreve em silêncio, então
- * testar a defesa contra DNS rebinding por ele daria sempre verde sem testar nada.
- */
-function rawStatus(path: string, host: string): Promise<number> {
-  return new Promise((resolve, reject) => {
-    const { port } = server.address() as AddressInfo;
-    const req = httpRequest(
-      { host: "127.0.0.1", port, path, headers: { host } },
-      (res) => {
-        res.resume();
-        resolve(res.statusCode ?? 0);
-      },
-    );
-    req.on("error", reject);
-    req.end();
-  });
-}
-
-beforeAll(async () => {
-  seed();
-  server = createHttpServer(db);
-  await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
-  baseUrl = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+const anuncio = (
+  itemId: number,
+  itemName: string,
+  price: number,
+  i: number,
+  prefix = "ssi",
+): TradingRow => ({
+  itemId,
+  mapId: 1,
+  ssi: `${prefix}-${itemId}-${i}`,
+  itemName,
+  databaseImgPath: null,
+  databaseType: "healing",
+  storeName: `Loja ${i}`,
+  itemPrice: price,
+  itemCnt: 10,
+  slotMaxCount: "",
+  storeTypeName: "BUY",
+  itemSellerCharName: `Vendedor${i}`,
 });
 
-afterAll(async () => {
-  await new Promise<void>((r) => server.close(() => r()));
-  db.close();
-  rmSync(dir, { recursive: true, force: true });
+/**
+ * O mundo dos testes, montado pela rota real de ingestão.
+ *
+ * A ordem importa e é a de produção: primeiro o agregado do site (`market-price`), depois
+ * os anúncios (`trading`). O `SOLD_OUT` entra num crawl de anúncios ANTERIOR e não aparece
+ * no atual — é assim que ele fica "já visto no mercado, sem oferta agora" sem precisar de
+ * nenhuma escrita fora do caminho normal, porque `inMarket` é carregado adiante de um
+ * retrato para o outro.
+ */
+beforeAll(async () => {
+  await applyMigrations();
+
+  await ingest({
+    dataset: "market-price",
+    server: "FREYA",
+    startedAt: 1_700_000_000,
+    crawlId: "seed-market-freya",
+    rows: [
+      {
+        itemId: ITEM_ID,
+        itemName: "Poção Vermelha",
+        databaseImgPath: null,
+        databaseType: "healing",
+        totalItemCnt: 5000,
+        minItemPrice: 40,
+        maxItemPrice: 120,
+        avgItemPrice: 60,
+      } satisfies MarketPriceRow,
+    ],
+  });
+
+  // Coleta antiga: é só aqui que o esgotado aparece à venda.
+  await ingest({
+    dataset: "trading",
+    server: "FREYA",
+    startedAt: 1_700_000_050,
+    crawlId: "seed-trading-freya-antigo",
+    rows: [
+      anuncio(SOLD_OUT, "Jellopy", 30, 0, "velho"),
+      // Entra aqui e some da coleta seguinte: é assim que ele fica "já visto no mercado,
+      // sem oferta agora" sem nenhuma escrita fora do caminho normal de ingestão.
+      anuncio(SEM_OFERTA, "Poção Amarela", 70, 1, "velho"),
+    ],
+  });
+
+  await ingest({
+    dataset: "trading",
+    server: "FREYA",
+    startedAt: 1_700_000_100,
+    crawlId: "seed-trading-freya",
+    rows: [
+      ...[50, 55, 70, 90].map((price, i) => anuncio(ITEM_ID, "Poção Vermelha", price, i)),
+      ...[KAFRA_ITEM, CLAN_ITEM].flatMap((itemId) =>
+        [500, 550].map((price, i) => ({
+          ...anuncio(itemId, `Item ${itemId}`, price, i, "arm"),
+          databaseType: "etc",
+          itemCnt: 20,
+        })),
+      ),
+    ],
+  });
+
+  /** O mesmo item, com outro preço, em NIDHOGG — para provar que os dois não se misturam. */
+  await ingest({
+    dataset: "trading",
+    server: "NIDHOGG",
+    startedAt: 1_700_000_200,
+    crawlId: "seed-trading-nidhogg",
+    rows: [900, 950].map((price, i) => anuncio(ITEM_ID, "Poção Vermelha", price, i, "nid")),
+  });
 });
 
 describe("paridade entre API e MCP", () => {
@@ -271,47 +231,63 @@ describe("números do mercado", () => {
 
 describe("higiene do HTTP", () => {
   it("recusa Host fora da allowlist (DNS rebinding)", async () => {
-    expect(await rawStatus("/api/v1/status", "evil.example.com")).toBe(403);
+    expect(await statusFromHost("/api/v1/status", "evil.example.com")).toBe(403);
   });
 
   it("/healthz responde sem passar pela allowlist", async () => {
     // O systemd e o workflow de deploy batem no health check por IP, sem o nome de
     // domínio, então ele tem que responder antes da allowlist.
-    expect(await rawStatus("/healthz", "evil.example.com")).toBe(200);
+    expect(await statusFromHost("/healthz", "evil.example.com")).toBe(200);
   });
 
   it("MCP só aceita POST", async () => {
-    expect((await fetch(`${baseUrl}/mcp`)).status).toBe(405);
+    expect((await SELF.fetch(`${ORIGIN}/mcp`)).status).toBe(405);
   });
 
-  it("um snapshot 'live' de banco antigo não vira o retrato mais recente", () => {
-    // A consulta ao vivo saiu na 0.6.0 e nada mais grava `source = 'live'` — mas o
-    // histórico em produção tem essas linhas, e cada uma cobria um item só. Se uma
-    // entrasse como snapshot corrente, o cache passaria a enxergar um mercado com um
-    // item e mais nada. Este teste é a guarda para os bancos que já existem.
-    const live = beginSnapshot(db, "trading", "FREYA", "live", 1_900_000_000);
-    writeRows(db, live, [
-      {
-        itemId: ITEM_ID, mapId: 1, ssi: "ao-vivo", itemName: "Poção Vermelha",
-        databaseImgPath: null, databaseType: "healing", storeName: "X", itemPrice: 1,
-        itemCnt: 1, slotMaxCount: "", storeTypeName: "BUY", itemSellerCharName: "Y",
-      } satisfies TradingRow,
-    ]);
-    finishSnapshot(db, live.id, "trading");
+  /**
+   * Uma coleta de agregado não pode apagar os anúncios.
+   *
+   * Substitui o teste do snapshot `source = 'live'`: aquele guardava a escolha do snapshot
+   * corrente numa consulta que não existe mais — hoje quem manda é o ponteiro no R2. O
+   * risco equivalente no desenho novo é este: o retrato é a UNIÃO de dois datasets, e cada
+   * ingestão reescreve só a metade dela. Se a metade errada fosse zerada, o mercado
+   * apareceria vazio entre uma coleta de `market-price` e a próxima de `trading`.
+   */
+  it("uma coleta de market-price preserva os anúncios do retrato", async () => {
+    await ingest({
+      dataset: "market-price",
+      server: "FREYA",
+      startedAt: 1_800_000_000,
+      crawlId: "market-freya-posterior",
+      rows: [
+        {
+          itemId: ITEM_ID, itemName: "Poção Vermelha",
+          databaseImgPath: null, databaseType: "healing",
+          // Só o total muda: `min` e `avg` são conferidos por testes adiante, e uma
+          // coleta de market-price reescreve o agregado INTEIRO do servidor.
+          totalItemCnt: 6000, minItemPrice: 40, maxItemPrice: 120, avgItemPrice: 60,
+        } satisfies MarketPriceRow,
+      ],
+    });
 
-    const cache = refreshCache(db, "FREYA");
-    expect(cache.listings.get(ITEM_ID)).toHaveLength(4);
-    expect(cache.listings.get(ITEM_ID)![0]!.price).toBe(50);
+    const item = (await getJson(`/api/v1/items/${ITEM_ID}?offers=5`)) as {
+      cheapest: { price: number }[];
+      offers: { stores: number; min: number } | null;
+      market: { totalSold: number | null } | null;
+    };
+    expect(item.cheapest).toHaveLength(4);
+    expect(item.cheapest[0]!.price).toBe(50);
+    expect(item.offers?.stores).toBe(4);
+    // E o agregado novo entrou: a metade que MUDOU foi trocada, a outra ficou.
+    expect(item.market?.totalSold).toBe(6000);
   });
 });
 
 /** Sanidade: o fixture do replay continua decodificando pelo caminho da API. */
 describe("replay pela API", () => {
   it("aceita upload do .rrf e devolve os três containers", async () => {
-    const file = readFileSync(
-      resolve(import.meta.dirname, "../replay/__tests__/fixtures/equip-test-2.rrf"),
-    );
-    const res = await fetch(`${baseUrl}/api/v1/replay`, {
+    const file = replayFixture("equip-test-2.rrf");
+    const res = await SELF.fetch(`${ORIGIN}/api/v1/replay`, {
       method: "POST",
       headers: { "content-type": "application/octet-stream" },
       body: file,
@@ -333,10 +309,8 @@ describe("replay pela API", () => {
    * em cima deles, então a presença é parte do contrato.
    */
   it("cada item traz slot, unidades e o agregado do site", async () => {
-    const file = readFileSync(
-      resolve(import.meta.dirname, "../replay/__tests__/fixtures/equip-test-2.rrf"),
-    );
-    const res = await fetch(`${baseUrl}/api/v1/replay`, {
+    const file = replayFixture("equip-test-2.rrf");
+    const res = await SELF.fetch(`${ORIGIN}/api/v1/replay`, {
       method: "POST",
       headers: { "content-type": "application/octet-stream" },
       body: file,
@@ -354,10 +328,10 @@ describe("replay pela API", () => {
   });
 
   it("recusa um arquivo que não é replay", async () => {
-    const res = await fetch(`${baseUrl}/api/v1/replay`, {
+    const res = await SELF.fetch(`${ORIGIN}/api/v1/replay`, {
       method: "POST",
       headers: { "content-type": "application/octet-stream" },
-      body: Buffer.alloc(200, 7),
+      body: new Uint8Array(200).fill(7),
     });
     expect(res.status).toBe(422);
   });
@@ -372,8 +346,7 @@ describe("replay pela API", () => {
  * cifras novas do cabeçalho) e o agente montam em cima deles.
  */
 describe("armazém pela API e pelo MCP", () => {
-  const fixture = (): Buffer =>
-    readFileSync(resolve(import.meta.dirname, "../replay/__tests__/fixtures/storage-test.rrf"));
+  const fixture = (): Uint8Array => replayFixture("storage-test.rrf");
 
   interface StorageBody {
     storage: { items: unknown[]; value: number; usedSlots: number; maxSlots: number } | null;
@@ -385,7 +358,7 @@ describe("armazém pela API e pelo MCP", () => {
   }
 
   async function viaApi(): Promise<StorageBody & { sellCandidates: { origin: string }[] }> {
-    const res = await fetch(`${baseUrl}/api/v1/replay`, {
+    const res = await SELF.fetch(`${ORIGIN}/api/v1/replay`, {
       method: "POST",
       headers: { "content-type": "application/octet-stream" },
       body: fixture(),
@@ -424,12 +397,10 @@ describe("armazém pela API e pelo MCP", () => {
   });
 
   it("um replay sem armazém aberto devolve null, e não vazio", async () => {
-    const res = await fetch(`${baseUrl}/api/v1/replay`, {
+    const res = await SELF.fetch(`${ORIGIN}/api/v1/replay`, {
       method: "POST",
       headers: { "content-type": "application/octet-stream" },
-      body: readFileSync(
-        resolve(import.meta.dirname, "../replay/__tests__/fixtures/equip-test-2.rrf"),
-      ),
+      body: replayFixture("equip-test-2.rrf"),
     });
     const body = (await res.json()) as StorageBody & { notes: string[] };
     // `null` é "ninguém abriu"; uma lista vazia seria a afirmação de que está vazio.
@@ -444,7 +415,7 @@ describe("armazém pela API e pelo MCP", () => {
   it("o MCP responde o mesmo que a API", async () => {
     const api = await viaApi();
     const mcp = (await callTool("value_inventory", {
-      dados: fixture().toString("base64"),
+      dados: toBase64(fixture()),
     })) as StorageBody & { candidatosAVenda: { origin: string }[] };
 
     expect(mcp.storage?.items).toHaveLength(api.storage?.items.length ?? -1);
@@ -469,10 +440,8 @@ describe("desvio do replay para a API", () => {
   });
 
   it("a rota que a ferramenta recomenda responde de verdade", async () => {
-    const file = readFileSync(
-      resolve(import.meta.dirname, "../replay/__tests__/fixtures/equip-test-2.rrf"),
-    );
-    const res = await fetch(`${baseUrl}/api/v1/replay`, {
+    const file = replayFixture("equip-test-2.rrf");
+    const res = await SELF.fetch(`${ORIGIN}/api/v1/replay`, {
       method: "POST",
       headers: { "content-type": "application/octet-stream" },
       body: file,
@@ -490,7 +459,6 @@ describe("desvio do replay para a API", () => {
  * e cada canal precisa devolver o do servidor que foi pedido.
  */
 describe("isolamento entre servidores", () => {
-  beforeAll(() => seedNidhogg());
 
   it("o preço de cada servidor é o seu", async () => {
     const freya = (await getJson(`/api/v1/items/${ITEM_ID}`)) as {
@@ -532,7 +500,7 @@ describe("isolamento entre servidores", () => {
   });
 
   it("servidor inexistente é 400, e não o padrão em silêncio", async () => {
-    const res = await fetch(`${baseUrl}/api/v1/items/${ITEM_ID}?server=NIDOGG`);
+    const res = await SELF.fetch(`${ORIGIN}/api/v1/items/${ITEM_ID}?server=NIDOGG`);
     expect(res.status).toBe(400);
     expect(((await res.json()) as { erro: string }).erro).toContain("NIDOGG");
   });
@@ -546,26 +514,13 @@ describe("isolamento entre servidores", () => {
  * sem teste ela sumiria no dia em que alguém achasse que um implica o outro.
  */
 describe("filtro à venda agora", () => {
-  beforeAll(() => {
-    db.prepare(`INSERT INTO item (item_id, name, name_norm) VALUES (?, ?, ?)`).run(
-      SOLD_OUT,
-      "Zargão Esgotado",
-      "zargao esgotado",
-    );
-    // Já foi visto alguma vez, mas não está em nenhuma coleta de anúncios.
-    db.prepare(
-      `INSERT INTO item_market (item_id, server, in_market) VALUES (?, 'FREYA', 1)`,
-    ).run(SOLD_OUT);
-    refreshCache(db, "FREYA");
-  });
-
   it("sem o filtro, o esgotado aparece", async () => {
-    const r = (await getJson("/api/v1/items?q=zargao")) as { items: { itemId: number }[] };
+    const r = (await getJson("/api/v1/items?q=jellopy")) as { items: { itemId: number }[] };
     expect(r.items.map((i) => i.itemId)).toContain(SOLD_OUT);
   });
 
   it("com o filtro, some — ninguém está vendendo", async () => {
-    const r = (await getJson("/api/v1/items?q=zargao&for_sale=1")) as {
+    const r = (await getJson("/api/v1/items?q=jellopy&for_sale=1")) as {
       total: number;
       items: unknown[];
     };
@@ -587,7 +542,7 @@ describe("filtro à venda agora", () => {
   });
 
   it("REST e MCP concordam no recorte", async () => {
-    const rest = (await getJson("/api/v1/items?q=zargao&for_sale=1")) as { total: number };
+    const rest = (await getJson("/api/v1/items?q=jellopy&for_sale=1")) as { total: number };
     const mcp = (await callTool("search_items", {
       query: "zargao",
       aVendaAgora: true,
@@ -676,9 +631,9 @@ describe("preços em lote", () => {
   });
 
   it("sem 'items' é 400 — pedir tudo não é uma pergunta", async () => {
-    expect((await fetch(`${baseUrl}/api/v1/prices`)).status).toBe(400);
-    expect((await fetch(`${baseUrl}/api/v1/prices?items=`)).status).toBe(400);
-    expect((await fetch(`${baseUrl}/api/v1/prices?items=abc,-1,0`)).status).toBe(400);
+    expect((await SELF.fetch(`${ORIGIN}/api/v1/prices`)).status).toBe(400);
+    expect((await SELF.fetch(`${ORIGIN}/api/v1/prices?items=`)).status).toBe(400);
+    expect((await SELF.fetch(`${ORIGIN}/api/v1/prices?items=abc,-1,0`)).status).toBe(400);
   });
 
   /**
@@ -689,12 +644,12 @@ describe("preços em lote", () => {
    */
   it("mais de 100 ids é 400, não uma lista cortada", async () => {
     const ids = Array.from({ length: 101 }, (_, i) => i + 1).join(",");
-    const res = await fetch(`${baseUrl}/api/v1/prices?items=${ids}`);
+    const res = await SELF.fetch(`${ORIGIN}/api/v1/prices?items=${ids}`);
     expect(res.status).toBe(400);
     expect((await res.json()) as { pedidos: number }).toMatchObject({ pedidos: 101 });
 
     const noTeto = Array.from({ length: 100 }, (_, i) => i + 1).join(",");
-    expect((await fetch(`${baseUrl}/api/v1/prices?items=${noTeto}`)).status).toBe(200);
+    expect((await SELF.fetch(`${ORIGIN}/api/v1/prices?items=${noTeto}`)).status).toBe(200);
   });
 
   /**
@@ -718,7 +673,7 @@ describe("preços em lote", () => {
     expect(nextTradingRun(12_345, 1_000, 30)).toBe(12_345);
   });
 
-  it("sem agendador, estima; sem coleta nenhuma, não há o que estimar", () => {
+  it("sem agendador, estima; sem coleta nenhuma, não há o que estimar", async () => {
     expect(nextTradingRun(null, 1_000, 30)).toBe(1_000 + 1_800);
     expect(nextTradingRun(null, null, 30)).toBeNull();
   });
@@ -735,8 +690,6 @@ describe("preços em lote", () => {
  * cache só enxerga a mais recente.
  */
 describe("ordenação e lista de ids na busca", () => {
-  const CARA = 502;
-  const SEM_OFERTA = 903;
 
   const anuncio = (itemId: number, itemName: string, price: number, i: number): TradingRow => ({
     itemId, mapId: 1, ssi: `ord-${itemId}-${i}`, itemName,
@@ -745,33 +698,34 @@ describe("ordenação e lista de ids na busca", () => {
     storeTypeName: "BUY", itemSellerCharName: `Vendedor${i}`,
   });
 
-  beforeAll(() => {
-    const novos = [
-      [CARA, "Poção Azul", "pocao azul"],
-      [SEM_OFERTA, "Poção Fantasma", "pocao fantasma"],
-    ] as const;
-    for (const [itemId, name, norm] of novos) {
-      db.prepare(`INSERT INTO item (item_id, name, name_norm) VALUES (?, ?, ?)`).run(
-        itemId,
-        name,
-        norm,
-      );
-      db.prepare(
-        `INSERT INTO item_market (item_id, server, in_market) VALUES (?, 'FREYA', 1)`,
-      ).run(itemId);
-    }
-
-    // Os anúncios da Poção Vermelha vão junto: o cache guarda só o último snapshot de
-    // trading, e deixá-los de fora mudaria o fixture por baixo de quem já rodou.
-    const trading = beginSnapshot(db, "trading", "FREYA", "import", 1_700_000_300);
-    writeRows(db, trading, [
-      ...[50, 55, 70, 90].map((price, i) => anuncio(ITEM_ID, "Poção Vermelha", price, i)),
-      ...[300, 320].map((price, i) => anuncio(CARA, "Poção Azul", price, i)),
-    ]);
-    rollupListings(db, trading);
-    transact(db, () => finishSnapshot(db, trading.id, "trading"));
-    refreshCache(db, "FREYA");
+  beforeAll(async () => {
+    // Os anúncios da Poção Vermelha vão junto: o retrato guarda só a coleta de trading
+    // MAIS RECENTE, e deixá-los de fora mudaria o fixture por baixo de quem já rodou.
+    // `SEM_OFERTA` entra sem anúncio nenhum de propósito — ele existe no catálogo e já
+    // passou pelo mercado, mas não está à venda.
+    await ingest({
+      dataset: "trading",
+      server: "FREYA",
+      startedAt: 1_700_000_300,
+      crawlId: "trading-freya-com-cara",
+      rows: [
+        ...[50, 55, 70, 90].map((price, i) => anuncio(ITEM_ID, "Poção Vermelha", price, i)),
+        ...[300, 320].map((price, i) => anuncio(CARA, "Poção Laranja", price, i)),
+      ],
+    });
   });
+
+  /**
+   * Os itens que este bloco controla.
+   *
+   * A busca corre sobre o catálogo real (13.846 itens), então `q=pocao` casa outras poções
+   * além das semeadas — `[Evento] Poção Vermelha Compacta`, por exemplo. Filtrar preserva a
+   * asserção de ORDEM, que é o que estes testes existem para provar, sem depender de o
+   * catálogo do jogo não ganhar mais uma poção amanhã.
+   */
+  const watched = new Set([ITEM_ID, CARA, SEM_OFERTA]);
+  const orderOf = async (query: string): Promise<number[]> =>
+    (await idsOf(query)).filter((id) => watched.has(id));
 
   const idsOf = async (query: string): Promise<number[]> =>
     ((await getJson(`/api/v1/items?${query}`)) as { items: { itemId: number }[] }).items.map(
@@ -779,7 +733,7 @@ describe("ordenação e lista de ids na busca", () => {
     );
 
   it("ordena pelo preço de agora", async () => {
-    expect(await idsOf("q=pocao&sort=price")).toEqual([ITEM_ID, CARA, SEM_OFERTA]);
+    expect(await orderOf("q=pocao&sort=price")).toEqual([ITEM_ID, CARA, SEM_OFERTA]);
   });
 
   /**
@@ -790,7 +744,7 @@ describe("ordenação e lista de ids na busca", () => {
    * decidida antes da inversão.
    */
   it("decrescente inverte os preços, mas não sobe quem não tem preço", async () => {
-    expect(await idsOf("q=pocao&sort=price&dir=desc")).toEqual([CARA, ITEM_ID, SEM_OFERTA]);
+    expect(await orderOf("q=pocao&sort=price&dir=desc")).toEqual([CARA, ITEM_ID, SEM_OFERTA]);
   });
 
   /**
@@ -812,11 +766,11 @@ describe("ordenação e lista de ids na busca", () => {
     const invertido = await idsMcp({ ordenar: "price", decrescente: true });
     expect(invertido).toEqual(await idsOf("q=pocao&sort=price&dir=desc"));
     // E o item sem oferta não sobe ao topo quando inverte.
-    expect(invertido.at(-1)).toBe(SEM_OFERTA);
+    expect(invertido.filter((id) => watched.has(id)).at(-1)).toBe(SEM_OFERTA);
   });
 
   it("ordenação desconhecida é 400 com a lista de válidas", async () => {
-    const res = await fetch(`${baseUrl}/api/v1/items?q=pocao&sort=xpto`);
+    const res = await SELF.fetch(`${ORIGIN}/api/v1/items?q=pocao&sort=xpto`);
     expect(res.status).toBe(400);
     const body = (await res.json()) as { erro: string; ordenacoes: string[] };
     expect(body.erro).toContain("xpto");
@@ -931,7 +885,7 @@ describe("ids do mercado", () => {
   });
 
   it("servidor inexistente é 400 aqui também", async () => {
-    const res = await fetch(`${baseUrl}/api/v1/ids?server=NIDOGG`);
+    const res = await SELF.fetch(`${ORIGIN}/api/v1/ids?server=NIDOGG`);
     expect(res.status).toBe(400);
   });
 
@@ -939,5 +893,215 @@ describe("ids do mercado", () => {
     const [rest, mcp] = await Promise.all([getJson("/api/v1/ids"), callTool("market_ids", {})]);
     const { nextTradingAt: _semRelogio, ...esperado } = rest as Record<string, unknown>;
     expect(mcp).toEqual(esperado);
+  });
+});
+
+/**
+ * Cache não é enfeite aqui — é o mecanismo de leitura.
+ *
+ * O D1 mais próximo fica em `enam`, a uns 120 ms de um usuário brasileiro, e um acerto de
+ * cache é servido do POP de São Paulo SEM executar o Worker. Ou seja: cabeçalho errado não
+ * deixa a resposta lenta, deixa a resposta CARA — requisição, CPU e linha lida cobradas
+ * onde não precisava. Na EC2 a API não mandava cabeçalho nenhum, então isto é a diferença
+ * inteira.
+ */
+describe("cabeçalhos de cache", () => {
+  const headers = async (path: string): Promise<Headers> => (await getResponse(path)).headers;
+
+  it("as rotas de mercado dizem ao navegador e à borda, separadamente", async () => {
+    const h = await headers(`/api/v1/items/${ITEM_ID}`);
+    expect(h.get("cache-control")).toMatch(/public, max-age=\d+/);
+    // A borda tem o próprio cabeçalho: a Cloudflare o consome e não o repassa, então o
+    // cliente nunca vê um TTL que não é dele.
+    expect(h.get("cloudflare-cdn-cache-control")).toMatch(/s-maxage=\d+/);
+  });
+
+  /**
+   * O teto de 300 s existe por causa do `tradingAgeMin`.
+   *
+   * Esse campo é calculado ao montar a resposta e vai ASSADO no corpo. Uma resposta
+   * cacheada em T e servida em T+280s subestima a idade em 280 s. Com o teto, o erro fica
+   * limitado a cinco minutos — e o `Age` que a Cloudflare acrescenta nos acertos permite
+   * corrigir. Sem ele, um agente diria "coletado há 2 minutos" sobre um dado de meia hora.
+   */
+  it("nenhuma rota com freshness passa de 300s na borda", async () => {
+    for (const path of [
+      `/api/v1/items?q=pocao`,
+      `/api/v1/items/${ITEM_ID}`,
+      `/api/v1/items/${ITEM_ID}/offers`,
+      `/api/v1/ids`,
+      `/api/v1/prices?items=${ITEM_ID}`,
+    ]) {
+      const edge = (await headers(path)).get("cloudflare-cdn-cache-control") ?? "";
+      const sMaxAge = Number(/s-maxage=(\d+)/.exec(edge)?.[1]);
+      expect(sMaxAge, path).toBeLessThanOrEqual(300);
+    }
+  });
+
+  it("o histórico diário pode durar mais que o de hora", async () => {
+    const dia = (await headers(`/api/v1/items/${ITEM_ID}/history?days=30&bucket=day`)).get(
+      "cloudflare-cdn-cache-control",
+    );
+    const hora = (await headers(`/api/v1/items/${ITEM_ID}/history?days=2&bucket=hour`)).get(
+      "cloudflare-cdn-cache-control",
+    );
+    expect(Number(/s-maxage=(\d+)/.exec(dia ?? "")?.[1])).toBeGreaterThan(300);
+    expect(Number(/s-maxage=(\d+)/.exec(hora ?? "")?.[1])).toBeLessThanOrEqual(300);
+  });
+
+  it("o que não pode ser cacheado diz no-store", async () => {
+    expect((await headers("/healthz")).get("cache-control")).toBe("no-store");
+    const replay = await SELF.fetch(`${ORIGIN}/api/v1/replay`, {
+      method: "POST",
+      headers: { "content-type": "application/octet-stream" },
+      body: replayFixture("equip-test-2.rrf"),
+    });
+    expect(replay.headers.get("cache-control")).toBe("no-store");
+  });
+
+  it("/ids e /prices devolvem 304 para quem já tem a versão", async () => {
+    for (const path of [`/api/v1/ids`, `/api/v1/prices?items=${ITEM_ID}`]) {
+      const first = await getResponse(path);
+      const etag = first.headers.get("etag");
+      expect(etag, path).toMatch(/^W\//);
+
+      const again = await SELF.fetch(`${ORIGIN}${path}`, { headers: { "if-none-match": etag! } });
+      expect(again.status, path).toBe(304);
+      expect(await again.text()).toBe("");
+    }
+  });
+
+  /**
+   * O ETag identifica a PERGUNTA, não só o snapshot.
+   *
+   * Sem a consulta na chave, dois pedidos diferentes dentro da mesma coleta compartilhariam
+   * o ETag — e o segundo receberia 304 para um corpo que nunca viu.
+   */
+  it("perguntas diferentes têm ETags diferentes", async () => {
+    const um = (await getResponse(`/api/v1/prices?items=${ITEM_ID}`)).headers.get("etag");
+    const dois = (await getResponse(`/api/v1/prices?items=${CARA}`)).headers.get("etag");
+    expect(um).not.toBe(dois);
+  });
+
+  it("a leitura pública é aberta, sem fragmentar o cache por origem", async () => {
+    const h = await headers(`/api/v1/ids`);
+    // `*` em vez da origem ecoada: o dado é público e sem autenticação, e `Vary: Origin`
+    // faria a SPA, o site de visuais e o claude.ai manterem três cópias da mesma resposta.
+    expect(h.get("access-control-allow-origin")).toBe("*");
+    expect(h.get("vary")).toBeNull();
+  });
+});
+
+/**
+ * A segunda camada de cache não pode responder o retrato errado.
+ *
+ * Ela guarda por id de snapshot, e os dois erros abaixo foram encontrados justamente ao
+ * ligá-la — os dois serviam dado velho ou de outro servidor com cara de resposta correta.
+ */
+describe("cache interno por snapshot", () => {
+  it("o segundo pedido idêntico vem do cache", async () => {
+    // Consulta exclusiva deste teste: qualquer uma já usada acima entraria já quente.
+    const path = `/api/v1/items?q=pocao&sort=median&limit=7`;
+    expect((await getResponse(path)).headers.get("x-snapshot-cache")).toBe("miss");
+    expect((await getResponse(path)).headers.get("x-snapshot-cache")).toBe("hit");
+  });
+
+  it("a ordem dos parâmetros não cria duas entradas", async () => {
+    await getResponse(`/api/v1/items?q=elixir&limit=5`);
+    // A borda chavearia pela URL crua e trataria isto como outra pergunta.
+    const invertido = await getResponse(`/api/v1/items?limit=5&q=elixir`);
+    expect(invertido.headers.get("x-snapshot-cache")).toBe("hit");
+  });
+
+  it("um acerto devolve os cabeçalhos públicos, não os internos", async () => {
+    const path = `/api/v1/items/${ITEM_ID}/offers`;
+    const primeiro = await getResponse(path);
+    const segundo = await getResponse(path);
+    expect(segundo.headers.get("x-snapshot-cache")).toBe("hit");
+    // O TTL interno é do cache, não do cliente: sem restaurar, o navegador herdaria os
+    // 300 s da entrada e a borda ficaria sem diretiva nenhuma.
+    expect(segundo.headers.get("cache-control")).toBe(primeiro.headers.get("cache-control"));
+    expect(segundo.headers.get("cloudflare-cdn-cache-control")).toBe(
+      primeiro.headers.get("cloudflare-cdn-cache-control"),
+    );
+  });
+
+  /**
+   * Uma coleta de `market-price` invalida o cache, mesmo sem tocar nos anúncios.
+   *
+   * O retrato é a união de dois datasets com sequências independentes. Com só o snapshot de
+   * `trading` na chave, o agregado novo ficava invisível até a coleta de lojas seguinte —
+   * meia hora servindo o preço médio anterior como se fosse o atual.
+   */
+  it("coleta de market-price invalida o que estava guardado", async () => {
+    const path = `/api/v1/items/${ITEM_ID}`;
+    await getResponse(path);
+    expect((await getResponse(path)).headers.get("x-snapshot-cache")).toBe("hit");
+
+    await ingest({
+      dataset: "market-price",
+      server: "FREYA",
+      startedAt: 1_850_000_000,
+      crawlId: "market-freya-invalida-cache",
+      rows: [
+        {
+          itemId: ITEM_ID, itemName: "Poção Vermelha",
+          databaseImgPath: null, databaseType: "healing",
+          totalItemCnt: 7000, minItemPrice: 40, maxItemPrice: 120, avgItemPrice: 60,
+        } satisfies MarketPriceRow,
+      ],
+    });
+
+    const depois = await getResponse(path);
+    expect(depois.headers.get("x-snapshot-cache")).toBe("miss");
+    const corpo = (await depois.json()) as { market: { totalSold: number } };
+    expect(corpo.market.totalSold).toBe(7000);
+  });
+
+  /**
+   * Um `?server=` inválido continua sendo 400.
+   *
+   * A chave tira `server` dos parâmetros de propósito (ausente e explícito são a mesma
+   * pergunta). Sem validar antes, "NIDOGG" caía na chave do padrão e recebia a resposta de
+   * FREYA com status 200 — exatamente o erro silencioso que `serverOf` existe para evitar.
+   */
+  it("servidor inválido não é servido do cache do padrão", async () => {
+    const res = await getResponse(`/api/v1/items/${ITEM_ID}?server=NIDOGG`);
+    expect(res.status).toBe(400);
+    expect(res.headers.get("x-snapshot-cache")).toBeNull();
+  });
+
+  it("os dois servidores não compartilham entrada", async () => {
+    const freya = (await getJson(`/api/v1/items/${ITEM_ID}?server=FREYA`)) as {
+      offers: { min: number };
+    };
+    const nidhogg = (await getJson(`/api/v1/items/${ITEM_ID}?server=NIDHOGG`)) as {
+      offers: { min: number };
+    };
+    expect(freya.offers.min).toBe(50);
+    expect(nidhogg.offers.min).toBe(900);
+  });
+});
+
+describe("HEAD", () => {
+  /**
+   * HEAD é GET sem corpo.
+   *
+   * O router casava só `method === "GET"`, então um HEAD numa rota válida caía no 404 do
+   * fim. Passou despercebido porque nada no caminho de teste usava HEAD — apareceu no
+   * primeiro `curl -I` do smoke, que é exatamente como um monitor de uptime pergunta.
+   */
+  it("responde como o GET, sem corpo", async () => {
+    const get = await getResponse(`/api/v1/items/${ITEM_ID}`);
+    const head = await SELF.fetch(`${ORIGIN}/api/v1/items/${ITEM_ID}`, { method: "HEAD" });
+
+    expect(head.status).toBe(get.status);
+    expect(head.headers.get("cache-control")).toBe(get.headers.get("cache-control"));
+    expect(await head.text()).toBe("");
+  });
+
+  it("uma rota que não existe continua 404 no HEAD", async () => {
+    const res = await SELF.fetch(`${ORIGIN}/api/v1/nao-existe`, { method: "HEAD" });
+    expect(res.status).toBe(404);
   });
 });

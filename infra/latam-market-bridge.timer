@@ -1,0 +1,21 @@
+# Dispara a ponte de cinco em cinco minutos.
+#
+# A coleta de anúncios roda a cada 30 min (com jitter de ±5), então cinco minutos garantem
+# que nenhuma coleta espere muito para chegar ao Worker sem transformar isso numa enxurrada
+# de POSTs. Um disparo que não encontra coleta nova é um no-op barato: a ingestão reconhece
+# o `crawlId` e responde `duplicate`.
+#
+# `Persistent=true` para um reboot não pular a janela; `RandomizedDelaySec` para a ponte não
+# bater no Worker no mesmo segundo em toda hora cheia.
+
+[Unit]
+Description=Dispara a ponte do latam-market
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=5min
+RandomizedDelaySec=30s
+Persistent=true
+
+[Install]
+WantedBy=timers.target

@@ -6,7 +6,7 @@
  * estas formas, nunca linhas cruas do SQLite.
  */
 
-import type { DatabaseSync } from "node:sqlite";
+import type { Db } from "./port.js";
 
 import type { Dataset } from "../core/datasets.js";
 import type { Server } from "../core/servers.js";
@@ -18,9 +18,6 @@ export interface ItemRow {
   imgPath: string | null;
   dbType: string | null;
   slots: number | null;
-  inMarket: boolean;
-  firstSeen: number | null;
-  lastSeen: number | null;
   /** Id de categoria derivado da descrição (ver `core/taxonomy.ts`). */
   itemType: string | null;
   /** Ids de slot de equipamento. Vazio quando não é equipamento. */
@@ -77,28 +74,30 @@ export interface SnapshotRow {
  * entrasse aqui viraria "o retrato mais recente do mercado": um retrato em que todos os
  * outros 4 mil itens sumiram.
  */
-export function latestSnapshotId(
-  db: DatabaseSync,
+export async function latestSnapshotId(
+  db: Db,
   dataset: Dataset,
   server: Server,
-): number | null {
-  const row = db
-    .prepare(
-      `SELECT id FROM snapshot
+): Promise<number | null> {
+  const row = await db.first<{ id: number }>(
+    `SELECT id FROM snapshot
         WHERE dataset = ? AND server = ? AND ok = 1 AND source <> 'live'
         ORDER BY started_at DESC LIMIT 1`,
-    )
-    .get(dataset, server) as { id: number } | undefined;
+    dataset,
+    server,
+  );
   return row?.id ?? null;
 }
 
-export function listSnapshots(db: DatabaseSync, limit = 20): SnapshotRow[] {
-  const rows = db
-    .prepare(
-      `SELECT id, server, dataset, started_at, finished_at, row_count, source
+export async function listSnapshots(
+  db: Db,
+  limit = 20,
+): Promise<SnapshotRow[]> {
+  const rows = await db.all<Record<string, unknown>>(
+    `SELECT id, server, dataset, started_at, finished_at, row_count, source
          FROM snapshot WHERE ok = 1 ORDER BY started_at DESC LIMIT ?`,
-    )
-    .all(limit) as Array<Record<string, unknown>>;
+    limit,
+  );
   return rows.map((r) => ({
     id: r["id"] as number,
     server: r["server"] as string,
@@ -111,23 +110,29 @@ export function listSnapshots(db: DatabaseSync, limit = 20): SnapshotRow[] {
 }
 
 /**
- * O catálogo inteiro, com os fatos de mercado DAQUELE servidor.
+ * O catálogo inteiro. Igual nos dois servidores, porque é do jogo.
  *
- * `LEFT JOIN` porque o catálogo é do jogo e existe nos dois servidores, enquanto
- * `item_market` só ganha linha quando o item aparece numa coleta. Sem o LEFT, um item
- * nunca anunciado em NIDHOGG sumiria da busca lá — e ele existe, só não está à venda.
+ * O `LEFT JOIN` com `item_market` que existia aqui saiu: "já apareceu no mercado" é fato
+ * POR SERVIDOR e agora vive no `MarketCache`, num `Set` à parte (ver `inMarketIds`). O que
+ * a separação compra é o catálogo poder ser carregado UMA vez e servir os dois servidores
+ * — no Worker ele vem de um asset estático, e duplicá-lo por servidor custaria alguns MB
+ * de um isolate que tem 128.
  */
-export function allItems(db: DatabaseSync, server: Server): ItemRow[] {
-  const rows = db
-    .prepare(
-      `SELECT i.item_id, i.name, i.name_norm, i.img_path, i.db_type, i.slots,
-              i.item_type, i.equip_slots,
-              m.in_market, m.first_seen, m.last_seen
-         FROM item i
-         LEFT JOIN item_market m ON m.item_id = i.item_id AND m.server = ?`,
-    )
-    .all(server) as Array<Record<string, unknown>>;
+export async function allItems(db: Db): Promise<ItemRow[]> {
+  const rows = await db.all<Record<string, unknown>>(
+    `SELECT item_id, name, name_norm, img_path, db_type, slots, item_type, equip_slots
+       FROM item`,
+  );
   return rows.map(toItem);
+}
+
+/** Ids que já apareceram no mercado DAQUELE servidor. */
+export async function inMarketIds(db: Db, server: Server): Promise<Set<number>> {
+  const rows = await db.all<{ item_id: number }>(
+    `SELECT item_id FROM item_market WHERE server = ? AND in_market = 1`,
+    server,
+  );
+  return new Set(rows.map((r) => r.item_id));
 }
 
 function toItem(r: Record<string, unknown>): ItemRow {
@@ -138,11 +143,10 @@ function toItem(r: Record<string, unknown>): ItemRow {
     imgPath: (r["img_path"] as string | null) ?? null,
     dbType: (r["db_type"] as string | null) ?? null,
     slots: (r["slots"] as number | null) ?? null,
-    inMarket: (r["in_market"] as number) === 1,
-    firstSeen: (r["first_seen"] as number | null) ?? null,
-    lastSeen: (r["last_seen"] as number | null) ?? null,
     itemType: (r["item_type"] as string | null) ?? null,
-    equipSlots: ((r["equip_slots"] as string | null) ?? "").split(",").filter(Boolean),
+    equipSlots: ((r["equip_slots"] as string | null) ?? "")
+      .split(",")
+      .filter(Boolean),
   };
 }
 
@@ -158,26 +162,30 @@ function toPricePoint(r: Record<string, unknown>): PricePoint {
 }
 
 /** Agregados do market-price no snapshot mais recente. */
-export function latestPricePoints(db: DatabaseSync, snapshotId: number): PricePoint[] {
-  const rows = db
-    .prepare(
-      `SELECT item_id, ts, total_cnt, min_price, max_price, avg_price
+export async function latestPricePoints(
+  db: Db,
+  snapshotId: number,
+): Promise<PricePoint[]> {
+  const rows = await db.all<Record<string, unknown>>(
+    `SELECT item_id, ts, total_cnt, min_price, max_price, avg_price
          FROM price_point WHERE snapshot_id = ?`,
-    )
-    .all(snapshotId) as Array<Record<string, unknown>>;
+    snapshotId,
+  );
   return rows.map(toPricePoint);
 }
 
 /** Anúncios de um snapshot, já ordenados por preço — é a ordem em que serão servidos. */
-export function listingsOfSnapshot(db: DatabaseSync, snapshotId: number): ListingRow[] {
-  const rows = db
-    .prepare(
-      `SELECT l.ssi, l.item_id, l.price, l.cnt, l.slot_max, l.map_id, s.name, s.seller
+export async function listingsOfSnapshot(
+  db: Db,
+  snapshotId: number,
+): Promise<ListingRow[]> {
+  const rows = await db.all<Record<string, unknown>>(
+    `SELECT l.ssi, l.item_id, l.price, l.cnt, l.slot_max, l.map_id, s.name, s.seller
          FROM listing l JOIN store s ON s.id = l.store_id
         WHERE l.snapshot_id = ?
         ORDER BY l.item_id, l.price`,
-    )
-    .all(snapshotId) as Array<Record<string, unknown>>;
+    snapshotId,
+  );
   return rows.map((r) => ({
     ssi: r["ssi"] as string,
     itemId: r["item_id"] as number,
@@ -197,31 +205,33 @@ export function listingsOfSnapshot(db: DatabaseSync, snapshotId: number): Listin
  * próprio site publica, `listing_daily`/`listing_stats` é o que nós medimos dos
  * anúncios. As duas respondem perguntas diferentes e não devem ser somadas.
  */
-export function priceHistory(
-  db: DatabaseSync,
+export async function priceHistory(
+  db: Db,
   server: Server,
   itemId: number,
   fromTs: number,
   toTs: number,
-): PricePoint[] {
-  const rows = db
-    .prepare(
-      `SELECT item_id, ts, total_cnt, min_price, max_price, avg_price
+): Promise<PricePoint[]> {
+  const rows = await db.all<Record<string, unknown>>(
+    `SELECT item_id, ts, total_cnt, min_price, max_price, avg_price
          FROM price_point
         WHERE server = ? AND item_id = ? AND ts >= ? AND ts <= ? ORDER BY ts`,
-    )
-    .all(server, itemId, fromTs, toTs) as Array<Record<string, unknown>>;
+    server,
+    itemId,
+    fromTs,
+    toTs,
+  );
   return rows.map(toPricePoint);
 }
 
-export function listingHistory(
-  db: DatabaseSync,
+export async function listingHistory(
+  db: Db,
   server: Server,
   itemId: number,
   fromTs: number,
   toTs: number,
   bucket: "hour" | "day" = "day",
-): StatsPoint[] {
+): Promise<StatsPoint[]> {
   const sql =
     bucket === "day"
       ? `SELECT item_id, day AS ts, listings, units, min_price, p25, median, p75, max_price
@@ -230,9 +240,13 @@ export function listingHistory(
       : `SELECT item_id, ts, listings, units, min_price, p25, median, p75, max_price
            FROM listing_stats
           WHERE server = ? AND item_id = ? AND ts >= ? AND ts <= ? ORDER BY ts`;
-  const rows = db.prepare(sql).all(server, itemId, fromTs, toTs) as Array<
-    Record<string, unknown>
-  >;
+  const rows = await db.all<Record<string, unknown>>(
+    sql,
+    server,
+    itemId,
+    fromTs,
+    toTs,
+  );
   return rows.map((r) => ({
     itemId: r["item_id"] as number,
     ts: r["ts"] as number,
@@ -252,18 +266,19 @@ export function listingHistory(
  * É o número contra o qual `appraise` compara um preço proposto. Usa `listing_daily`
  * (que vive para sempre) em vez dos anúncios crus (que são apagados).
  */
-export function baseline(
-  db: DatabaseSync,
+export async function baseline(
+  db: Db,
   server: Server,
   itemId: number,
   fromTs: number,
-): { days: number; avgMedian: number; minSeen: number } | null {
-  const row = db
-    .prepare(
-      `SELECT COUNT(*) AS days, AVG(median) AS avg_median, MIN(min_price) AS min_seen
+): Promise<{ days: number; avgMedian: number; minSeen: number } | null> {
+  const row = await db.first<Record<string, unknown>>(
+    `SELECT COUNT(*) AS days, AVG(median) AS avg_median, MIN(min_price) AS min_seen
          FROM listing_daily WHERE server = ? AND item_id = ? AND day >= ?`,
-    )
-    .get(server, itemId, fromTs) as Record<string, unknown> | undefined;
+    server,
+    itemId,
+    fromTs,
+  );
   const days = (row?.["days"] as number) ?? 0;
   if (days === 0) return null;
   return {

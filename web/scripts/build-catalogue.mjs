@@ -13,7 +13,10 @@
  *     canais. Uma busca com `limit=100` passaria a gastar centenas de KB do contexto
  *     do agente no MCP, que é o produto principal do projeto.
  *
- * Saídas (as duas com `.br`/`.zst`/`.gz` ao lado, para o `file_server precompressed`):
+ * Saídas (só o JSON: a Cloudflare comprime na entrega, então os `.br`/`.zst`/`.gz` que
+ * existiam aqui para o `file_server precompressed` do Caddy viraram arquivos mortos —
+ * servidos com o Content-Type errado, ocupando o orçamento de arquivos do deploy, e
+ * custando 11 s de brotli em todo build para produzir byte a byte o que já existia):
  *   public/generated/descriptions.<sha8>.json  { "<id>": "<descrição>" }
  *   public/generated/untradable.<sha8>.json    [<id>, ...]
  *   src/generated/catalogue.ts                 as URLs, com o hash embutido
@@ -30,12 +33,10 @@ import {
   readdirSync,
   readFileSync,
   rmSync,
-  statSync,
   writeFileSync,
 } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import zlib from "node:zlib";
 
 import { isUntradable } from "./catalogue-rules.mjs";
 
@@ -74,9 +75,7 @@ const untradableUrl = emit("untradable", untradable);
 // diferente ficaria para trás e subiria no tar para sempre. Varre em vez de apagar o
 // diretório inteiro, senão o `emit` nunca encontraria nada para reaproveitar.
 for (const stale of readdirSync(publicDir)) {
-  if (!keep.has(stale.replace(/\.(br|gz|zst)$/, ""))) {
-    rmSync(join(publicDir, stale), { force: true });
-  }
+  if (!keep.has(stale)) rmSync(join(publicDir, stale), { force: true });
 }
 
 writeFileSync(
@@ -93,44 +92,15 @@ console.log(
     `${untradable.length} intransferíveis`,
 );
 
-/** Grava o JSON com hash no nome, mais as variantes comprimidas. Devolve a URL. */
+/** Grava o JSON com hash no nome. Devolve a URL. */
 function emit(name, data) {
   const json = JSON.stringify(data);
   const hash = createHash("sha256").update(json).digest("hex").slice(0, 8);
   const file = `${name}.${hash}.json`;
-  const path = join(publicDir, file);
   const raw = Buffer.from(json, "utf8");
   keep.add(file);
 
-  // O nome JÁ é o hash do conteúdo, então um `.br` existente só pode ter vindo deste
-  // mesmo JSON. Sem esta saída antecipada o brotli de qualidade 11 recomprimia 5,4 MB
-  // a cada `dev`, `test`, `typecheck` e `build` — 11 s medidos, três vezes por deploy,
-  // sempre para produzir byte a byte o mesmo arquivo.
-  if (existsSync(`${path}.br`)) {
-    console.log(`  ${file} — reaproveitado`);
-    return `/generated/${file}`;
-  }
-
-  writeFileSync(path, raw);
-  writeFileSync(
-    `${path}.br`,
-    zlib.brotliCompressSync(raw, {
-      params: {
-        [zlib.constants.BROTLI_PARAM_QUALITY]: 11,
-        [zlib.constants.BROTLI_PARAM_SIZE_HINT]: raw.length,
-      },
-    }),
-  );
-  writeFileSync(`${path}.gz`, zlib.gzipSync(raw, { level: 9 }));
-  // zstd só existe no node:zlib a partir do 22.15. O Caddy tenta as codificações na
-  // ordem configurada e cai para a próxima, então a ausência degrada sozinha.
-  if (typeof zlib.zstdCompressSync === "function") {
-    writeFileSync(`${path}.zst`, zlib.zstdCompressSync(raw));
-  }
-
-  console.log(
-    `  ${file} — ${kb(raw.length)} cru, ${kb(statSync(`${path}.br`).size)} brotli, ` +
-      `${kb(statSync(`${path}.gz`).size)} gzip`,
-  );
+  writeFileSync(join(publicDir, file), raw);
+  console.log(`  ${file} — ${kb(raw.length)}`);
   return `/generated/${file}`;
 }

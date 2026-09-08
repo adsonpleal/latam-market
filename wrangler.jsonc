@@ -1,0 +1,74 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "latam-market",
+  "main": "src/worker.ts",
+  // `nodejs_compat` entra por dois motivos concretos: `Buffer` no caminho do replay
+  // (`value_inventory` recebe base64) e `node:crypto` na verificação do HMAC da ingestão.
+  // Tem que ser uma data que o workerd LOCAL também entenda: o runtime embutido no
+  // vitest-pool-workers vai até 2026-08-22, e uma data à frente faz o pool se recusar a
+  // subir. Data de compatibilidade é piso, não teto — subir só quando o pool acompanhar.
+  "compatibility_date": "2026-08-22",
+  "compatibility_flags": ["nodejs_compat"],
+
+  // SEM `routes` de propósito. Até a fase 4 o Worker só existe em *.workers.dev; o domínio
+  // continua apontando para o EC2, e é isso que torna o rollback uma troca de DNS.
+
+  "assets": {
+    "directory": "./web/dist",
+    "binding": "ASSETS",
+    // Equivale ao `try_files {path} /index.html` do Caddy: o roteamento é do cliente
+    // (BrowserRouter), então qualquer caminho que não seja arquivo cai no index.
+    "not_found_handling": "single-page-application",
+    // O equivalente ao `@backend path /api/* /mcp /healthz` que vinha ANTES do
+    // `file_server` no Caddy. Sem isto, o `not_found_handling` acima responderia
+    // index.html para /api/v1/qualquer-coisa e a API sumiria por baixo da SPA — o mesmo
+    // acidente de ordem que deixou a raiz em 404 na 0.3.0, com outro nome.
+    "run_worker_first": ["/api/*", "/mcp", "/healthz", "/internal/*"]
+  },
+
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "latam-market",
+      "database_id": "ff2d5093-d0e9-4ee6-8dfa-65350ac5e89d",
+      "migrations_dir": "migrations"
+    }
+  ],
+
+  "r2_buckets": [
+    {
+      "binding": "SNAPSHOTS",
+      "bucket_name": "latam-market-snapshots"
+    }
+  ],
+
+  // De hora em hora fecha o dia corrente e limpa os retratos velhos do R2; uma vez por dia
+  // refaz o dia anterior (a última coleta dele pode ter pousado depois das 23h) e varre o
+  // histórico vencido. Os dois com intervalo >= 1h, o que dá 15 minutos de CPU cada.
+  "triggers": { "crons": ["7 * * * *", "13 0 * * *"] },
+
+  "observability": { "enabled": true, "head_sampling_rate": 1 },
+
+  // Valores que dois módulos capturam em escopo de MÓDULO, antes de existir `env`:
+  // `mcp/tools.ts` monta `API_REPLAY_URL` e dimensiona o schema de `get_prices`, e
+  // `mcp/server.ts` interpola a URL nas instruções. Como `define` eles continuam
+  // constantes de build, que é o que aquele código sempre assumiu.
+  "define": {
+    "__PUBLIC_URL__": "\"https://mercado.latam-tools.com.br\"",
+    "__MAX_BATCH_ITEMS__": "100"
+  },
+
+  "vars": {
+    // O hostname de *.workers.dev entra enquanto durar a fase encenada: o Worker vive só
+    // lá até o cutover, e sem ele na allowlist toda requisição vira 403 (a defesa contra
+    // DNS rebinding não sabe que aquele nome também é nosso). Sai quando o domínio virar.
+    "ALLOWED_HOSTS": "mercado.latam-tools.com.br,latam-market.adsonpleal.workers.dev,localhost,127.0.0.1",
+    // `visuais` é o simulador de visuais: o catálogo dele filtra por "já visto no mercado"
+    // / "à venda agora" com /api/v1/ids, direto do navegador.
+    "ALLOWED_ORIGINS": "https://claude.ai,https://mercado.latam-tools.com.br,https://visuais.latam-tools.com.br,http://localhost:5173",
+    "MAX_MCP_BODY": "1048576",
+    "MAX_REPLAY_BYTES": "8388608",
+    "MAX_RESULTS": "100",
+    "CRAWL_TRADING_MIN": "30"
+  }
+}

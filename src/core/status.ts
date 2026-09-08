@@ -7,7 +7,7 @@
  * uma coluna passaria a mudar a API.
  */
 
-import type { DatabaseSync } from "node:sqlite";
+import type { Db } from "../store/port.js";
 
 import type { Server } from "./servers.js";
 
@@ -39,12 +39,16 @@ export interface ServiceStatus {
   collections: Collection[];
 }
 
-export function serviceStatus(db: DatabaseSync, server: Server, limit = 10): ServiceStatus {
+export async function serviceStatus(
+  db: Db,
+  server: Server,
+  limit = 10,
+): Promise<ServiceStatus> {
   return {
     // O frescor é do servidor perguntado; a lista de coletas mostra os dois, porque
     // é a saúde do coletor que ela responde, não o estado de um mercado.
     freshness: freshness(server),
-    collections: listSnapshots(db, limit).map((s) => ({
+    collections: (await listSnapshots(db, limit)).map((s) => ({
       id: s.id,
       dataset: s.dataset,
       server: s.server,

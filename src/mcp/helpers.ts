@@ -6,7 +6,7 @@
  * que fazer. Como resultado com `isError`, ele lê a mensagem e corrige a chamada.
  */
 
-import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import type { McpServer } from "@modelcontextprotocol/server";
 import { z } from "zod";
 
 import { DEFAULT_SERVER, SERVERS, type Server } from "../core/servers.js";
@@ -66,9 +66,13 @@ export function registerJsonTool<A>(
   config: ToolConfig,
   handler: (args: A, market: Server) => unknown | Promise<unknown>,
 ): void {
-  const withServer: ToolConfig = {
+  // `z.object` explícito: a v2 do SDK ainda aceita o mapa de campos cru, mas o marca como
+  // deprecado e o embrulha por dentro. Embrulhar aqui — o único lugar que monta o schema
+  // final — deixa os onze schemas exatamente como estão e tira o projeto do caminho que
+  // vai sumir numa v3.
+  const withServer = {
     ...config,
-    inputSchema: { ...(config.inputSchema ?? {}), servidor: servidorSchema },
+    inputSchema: z.object({ ...(config.inputSchema ?? {}), servidor: servidorSchema }),
   };
 
   server.registerTool(name, withServer as never, (async (args: A & { servidor?: Server }) => {

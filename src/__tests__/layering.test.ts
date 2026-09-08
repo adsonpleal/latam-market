@@ -9,12 +9,15 @@
  */
 
 import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { resolve, sep } from "node:path";
 import { describe, expect, it } from "vitest";
 
 import { filesUnder } from "./files.js";
 
 const SRC = resolve(import.meta.dirname, "..");
+
+/** Caminho relativo com barra normal, para a asserção não depender do sistema. */
+const rel = (file: string): string => file.slice(SRC.length + 1).split(sep).join("/");
 
 const TS = /\.tsx?$/;
 const tsUnder = (dir: string): string[] => filesUnder(dir, { match: TS });
@@ -26,6 +29,18 @@ function importsIn(source: string): string[] {
 
 const importsOf = (file: string): string[] => importsIn(readFileSync(file, "utf8"));
 
+/**
+ * Só os especificadores trazidos com `import type` — apagados na compilação.
+ *
+ * A diferença importa para uma exceção só (ver abaixo), e é a mesma que já vale para
+ * `web/` alcançar `src/`: um tipo não cria dependência em runtime.
+ */
+function typeOnlyImportsIn(source: string): Set<string> {
+  return new Set(
+    [...source.matchAll(/import\s+type\s+[^"']*?from\s+["']([^"']+)["']/g)].map((m) => m[1]!),
+  );
+}
+
 describe("camadas", () => {
   const edgeFiles = [...tsUnder(resolve(SRC, "api")), ...tsUnder(resolve(SRC, "mcp"))];
 
@@ -33,16 +48,61 @@ describe("camadas", () => {
     expect(edgeFiles.length).toBeGreaterThan(3);
   });
 
-  it("api/ e mcp/ não alcançam store/, worker/ nem collect/", () => {
+  it("api/ e mcp/ só alcançam core/ (e o vocabulário de resposta)", () => {
     const violations: string[] = [];
     for (const file of edgeFiles) {
+      const typeOnly = typeOnlyImportsIn(readFileSync(file, "utf8"));
       for (const spec of importsOf(file)) {
-        if (/^\.\.\/(store|worker|collect)\//.test(spec)) {
+        // `edge/respond.js` é o vocabulário de RESPOSTA — `json`, política de cache,
+        // ETag. Os dois canais o compartilham de propósito: é o que faz uma rota nova
+        // nascer com os mesmos cabeçalhos nos dois lados. O resto de `edge/` (allowlists,
+        // ingestão, o próprio `worker.ts`) continua fora do alcance deles.
+        if (spec === "../edge/respond.js") continue;
+        if (/^\.\.\/(store|shipper|collect|edge)\//.test(spec)) {
+          // Exceção única: `store/port.js` é a PORTA do banco — uma interface sem
+          // implementação, que some na compilação. Ela é o contrato que `core/` exige,
+          // não a linha do banco que `store/` devolve, então importá-la não pode
+          // reproduzir o vazamento que este teste existe para pegar (o `listSnapshots`
+          // do cabeçalho). Como VALOR continua proibida: seria um adaptador concreto
+          // entrando pela borda.
+          if (spec === "../store/port.js" && typeOnly.has(spec)) continue;
           violations.push(`${file.slice(SRC.length + 1)} -> ${spec}`);
         }
       }
     }
     // A mensagem lista o que quebrou, para não precisar caçar.
+    expect(violations).toEqual([]);
+  });
+
+  /**
+   * Nada de `node:` em `core/`, `api/` e `mcp/`.
+   *
+   * É a regra que mantém as duas camadas rodando nos dois runtimes. Ela nasceu de um
+   * caso concreto: `core/` importava `type { DatabaseSync } from "node:sqlite"` — tipo
+   * de um runtime específico numa camada que não pode conhecer nenhum. Compilava, e
+   * teria quebrado o bundle do Worker sem nenhum teste reclamar.
+   *
+   * `api/` entrou nesta regra quando o router deixou de receber `IncomingMessage` e passou
+   * a receber `Request` — a exceção temporária que existia para ele foi escrita para
+   * falhar exatamente nesse momento, e falhou.
+   *
+   * `node:buffer` fica de fora da proibição porque o Workers o oferece com
+   * `nodejs_compat`, e o caminho do replay depende dele.
+   */
+  it("core/, api/ e mcp/ não importam nada de node:", () => {
+    const files = [
+      ...tsUnder(resolve(SRC, "core")),
+      ...tsUnder(resolve(SRC, "api")),
+      ...tsUnder(resolve(SRC, "mcp")),
+    ];
+    const violations: string[] = [];
+    for (const file of files) {
+      for (const spec of importsOf(file)) {
+        if (spec.startsWith("node:") && spec !== "node:buffer") {
+          violations.push(`${file.slice(SRC.length + 1)} -> ${spec}`);
+        }
+      }
+    }
     expect(violations).toEqual([]);
   });
 
@@ -57,10 +117,19 @@ describe("camadas", () => {
   it("só collect/ carrega o coletor", () => {
     const violations: string[] = [];
 
-    // `server/config.ts` é onde TODA variável de ambiente é lida, então é a única exceção
+    // `config.ts` é onde TODA variável de ambiente é lida, então é a única exceção
     // à regra de que COLLECTOR_PATH é assunto de `collect/`. Este arquivo de teste também,
     // por escrever o nome que procura.
-    const mayNameTheEnvVar = ["server/config.ts", "__tests__/layering.test.ts"];
+    //
+    // E o teste do prazo da coleta, que ESCREVE a variável em vez de lê-la: ele aponta o
+    // `loadCollector` para um coletor falso em disco, que é a única forma de exercitar o
+    // `import()` dinâmico de verdade. A regra existe para que ninguém descubra o caminho do
+    // coletor por conta própria; passá-lo por `applyEnv` num teste é o contrário disso.
+    const mayNameTheEnvVar = [
+      "config.ts",
+      "__tests__/layering.test.ts",
+      "shipper/__tests__/crawl.test.ts",
+    ];
 
     for (const file of tsUnder(SRC)) {
       const rel = file.slice(SRC.length + 1).replace(/\\/g, "/");
@@ -74,9 +143,9 @@ describe("camadas", () => {
         violations.push(`${rel} lê COLLECTOR_PATH`);
       }
 
-      // Quem carrega é o worker de coleta, e só ele.
+      // Quem carrega é o shipper, e só ele.
       for (const spec of importsIn(source)) {
-        if (/collect\/load\.js$/.test(spec) && !rel.startsWith("worker/")) {
+        if (/collect\/load\.js$/.test(spec) && !rel.startsWith("shipper/")) {
           violations.push(`${rel} -> ${spec}`);
         }
       }

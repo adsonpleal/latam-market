@@ -12,7 +12,7 @@
  * só o acumulado histórico. Qualquer "vai subir" seria invenção.
  */
 
-import type { DatabaseSync } from "node:sqlite";
+import type { Db } from "../store/port.js";
 
 import type { Server } from "./servers.js";
 
@@ -59,12 +59,12 @@ export interface Appraisal {
 /** Janela do histórico. 30 dias cobre o ciclo de eventos sem diluir demais. */
 const WINDOW_DAYS = 30;
 
-export function appraise(
-  db: DatabaseSync,
+export async function appraise(
+  db: Db,
   server: Server,
   itemId: number,
   price: number,
-): Appraisal | null {
+): Promise<Appraisal | null> {
   const item = toBrief(server, itemId);
   if (!item) return null;
 
@@ -86,7 +86,7 @@ export function appraise(
     };
   }
 
-  const base = baseline(db, server, itemId, Math.floor(Date.now() / 1000) - WINDOW_DAYS * 86400);
+  const base = await baseline(db, server, itemId, Math.floor(Date.now() / 1000) - WINDOW_DAYS * 86400);
   const historical = base
     ? {
         days: base.days,

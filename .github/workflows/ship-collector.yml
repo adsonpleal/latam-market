@@ -1,0 +1,109 @@
+name: Shipper
+
+# O único deploy que ainda toca a EC2.
+#
+# O coletor precisa da saída de rede que só ele administra, e um Cron Trigger não a tem —
+# então ele fica na máquina, com o shipper ao lado agendando e empurrando o resultado para
+# `/internal/ingest`. Quando o coletor for migrado, este workflow some.
+#
+# Filtrado por caminho de propósito: o resto do repositório é do Worker e não muda nada
+# aqui, e um deploy à toa reinicia o agendador (perdendo o jitter em curso).
+on:
+  push:
+    branches: [main]
+    paths:
+      - "src/shipper/**"
+      - "src/collect/**"
+      - "src/config.ts"
+      - "src/store/rows.ts"
+      - "src/core/servers.ts"
+      - "src/core/datasets.ts"
+      - "build.mjs"
+      - "infra/latam-market-shipper.service"
+      - ".github/workflows/ship-collector.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: latam-market-shipper
+  cancel-in-progress: false
+
+jobs:
+  ship:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm typecheck
+      - run: pnpm test --project node
+
+      - name: Empacotar
+        run: |
+          pnpm build
+          # Um arquivo cada, e mais nada: sem node_modules no servidor, sem passo de build
+          # lá. O catálogo não vai junto — quem precisa dele é a busca, que mora no Worker.
+          test -s dist/shipper.mjs
+          # A ponte é temporária (dura enquanto houver escrita dupla), mas enquanto existir
+          # tem que acompanhar o código — senão vira um binário velho falando com um Worker
+          # novo.
+          test -s dist/bridge.mjs
+
+      # `DEPLOY_*` e não `EC2_*`: o shipper não pousa mais na AWS, e o repositório do
+      # coletor usa os mesmos nomes para a mesma máquina. Um nome que mente sobre onde o
+      # deploy cai é a espécie de detalhe que faz alguém procurar no console errado.
+      - name: Configurar SSH
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/deploy.pem
+          chmod 600 ~/.ssh/deploy.pem
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Enviar e reiniciar
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          tar -czf shipper.tar.gz dist/shipper.mjs dist/shipper.mjs.map dist/bridge.mjs dist/bridge.mjs.map infra
+          scp -i ~/.ssh/deploy.pem shipper.tar.gz "ubuntu@$DEPLOY_HOST:~/"
+          ssh -i ~/.ssh/deploy.pem "ubuntu@$DEPLOY_HOST" '
+            set -e
+            rm -rf ~/shipper-next && mkdir -p ~/shipper-next
+            tar -xzf ~/shipper.tar.gz -C ~/shipper-next
+            test -s ~/shipper-next/dist/shipper.mjs
+
+            sudo rsync -a --delete ~/shipper-next/ /opt/latam-market-shipper/
+            sudo chown -R ubuntu:ubuntu /opt/latam-market-shipper
+            # A ponte é um oneshot disparado por timer: basta trocar o arquivo, o próximo
+            # disparo já usa o novo. Copia de /opt, e não de ~/shipper-next, porque o
+            # diretório de espera é apagado logo abaixo.
+            if [ -d /opt/latam-market-bridge ]; then
+              sudo cp /opt/latam-market-shipper/dist/bridge.mjs* /opt/latam-market-bridge/
+            fi
+
+            rm -rf ~/shipper-next ~/shipper.tar.gz
+
+            # O shipper só existe depois que o serviço antigo sair de cena.
+            if systemctl list-unit-files latam-market-shipper.service >/dev/null 2>&1; then
+              sudo systemctl restart latam-market-shipper
+            fi
+          '
+
+      - name: Verificar
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          # Allowlist dos prefixos que são nossos, e não denylist do que esconder: ESTE LOG
+          # É PÚBLICO, e o journal desta unit traz também linhas do coletor (com endereços
+          # de rede) e de `sudo` (com caminhos e argumentos). O que é nosso a gente conhece;
+          # o que o outro lado vai imprimir amanhã, não.
+          ssh -i ~/.ssh/deploy.pem "ubuntu@$DEPLOY_HOST" \
+            'systemctl is-active latam-market-shipper && journalctl -u latam-market-shipper --no-pager -n 20 | grep -E "\[(boot|crawl)\]" || true'

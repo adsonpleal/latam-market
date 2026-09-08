@@ -1,0 +1,24 @@
+# Cabeçalhos dos arquivos estáticos. Substitui os dois matchers que o fragmento do Caddy
+# aplicava, e pela mesma razão de sempre:
+#
+# O Vite carimba hash no nome de todo asset, e o build do catálogo faz o mesmo com as
+# descrições — os dois podem ser imutáveis. O HTML NÃO pode: é ele que aponta para os hashes
+# novos, e um deploy troca todos de uma vez. Um índice cacheado deixa o navegador pedindo
+# assets que não existem mais — tela branca até limpar o cache na mão.
+#
+# `/generated/*` precisa de regra própria: aqueles arquivos são versionados pelo
+# `build-catalogue.mjs`, não pelo Vite, então a heurística automática da Cloudflare não os
+# reconhece como imutáveis.
+
+/assets/*
+  Cache-Control: public, max-age=31536000, immutable
+
+/generated/*
+  Cache-Control: public, max-age=31536000, immutable
+
+/index.html
+  Cache-Control: public, max-age=0, must-revalidate
+
+/*
+  X-Content-Type-Options: nosniff
+  Referrer-Policy: strict-origin-when-cross-origin
