@@ -210,18 +210,38 @@ export async function handleIngest(request: Request, env: Env): Promise<Response
   for (const itemId of distinct.keys()) inMarket.add(itemId);
 
   let blob: SnapshotBlob;
+  /** Quantas linhas a deduplicação descartou. Publicado na resposta — ver o `return`. */
+  let deduped = 0;
   if (header.dataset === "trading") {
-    const listings: ListingRow[] = (rows as TradingRow[]).map((row) => ({
-      ssi: row.ssi,
-      itemId: row.itemId,
-      price: row.itemPrice,
-      cnt: row.itemCnt,
-      // O site manda `""` quando o item não tem slot, e isso é NULL, não string vazia.
-      slotMax: row.slotMaxCount || null,
-      storeName: row.storeName,
-      seller: row.itemSellerCharName,
-      mapId: row.mapId,
-    }));
+    // Deduplicado por `ssi`, que é o id da VAGA DE LOJA e portanto único dentro de uma
+    // coleta. Última ocorrência vence.
+    //
+    // Isto existia e se perdeu na migração. A tabela `listing` do SQLite era
+    // `PRIMARY KEY (snapshot_id, ssi)` com `INSERT OR REPLACE`: o banco absorvia repetição
+    // sem ninguém precisar pensar nela. Ao tirar os anúncios do D1 e passá-los para o blob
+    // no R2, a garantia saiu junto — o blob serializa o que chegar.
+    //
+    // E chega repetido: as páginas de uma coleta são buscadas em instantes diferentes
+    // (minutos, com as lanes lentas), o mercado se mexe entre elas, e a mesma vaga
+    // reaparece na página seguinte. Sem chave, a mesma oferta era listada 2 ou 3 vezes na
+    // interface — e, pior, contada 2 ou 3 vezes no `rollupStats` logo abaixo, inflando o
+    // número de anúncios e puxando os percentis para o preço repetido.
+    const bySsi = new Map<string, ListingRow>();
+    for (const row of rows as TradingRow[]) {
+      bySsi.set(row.ssi, {
+        ssi: row.ssi,
+        itemId: row.itemId,
+        price: row.itemPrice,
+        cnt: row.itemCnt,
+        // O site manda `""` quando o item não tem slot, e isso é NULL, não string vazia.
+        slotMax: row.slotMaxCount || null,
+        storeName: row.storeName,
+        seller: row.itemSellerCharName,
+        mapId: row.mapId,
+      });
+    }
+    const listings: ListingRow[] = [...bySsi.values()];
+    deduped = rows.length - listings.length;
     statements.push(
       ...insertStats(header.server, header.startedAt, rollupStats(groupByItem(listings))),
     );
@@ -237,14 +257,22 @@ export async function handleIngest(request: Request, env: Env): Promise<Response
       listings,
     });
   } else {
-    const points: PricePoint[] = (rows as MarketPriceRow[]).map((row) => ({
-      itemId: row.itemId,
-      ts: header.startedAt,
-      totalCnt: row.totalItemCnt,
-      minPrice: row.minItemPrice,
-      maxPrice: row.maxItemPrice,
-      avgPrice: row.avgItemPrice,
-    }));
+    // Mesma história do `ssi` acima, com a chave que este dataset tem: uma linha por ITEM.
+    // O D1 ainda se protege sozinho (`upsertPricePoints` casa com a chave da tabela), mas o
+    // blob não, e é o blob que a interface lê.
+    const byItem = new Map<number, PricePoint>();
+    for (const row of rows as MarketPriceRow[]) {
+      byItem.set(row.itemId, {
+        itemId: row.itemId,
+        ts: header.startedAt,
+        totalCnt: row.totalItemCnt,
+        minPrice: row.minItemPrice,
+        maxPrice: row.maxItemPrice,
+        avgPrice: row.avgItemPrice,
+      });
+    }
+    const points: PricePoint[] = [...byItem.values()];
+    deduped = rows.length - points.length;
     statements.push(...upsertPricePoints(header.server, snapshot.id, header.startedAt, points));
     blob = toBlob({
       server: header.server,
@@ -274,6 +302,11 @@ export async function handleIngest(request: Request, env: Env): Promise<Response
     snapshotId: snapshot.id,
     duplicate: false,
     rows: rows.length,
+    // O que a deduplicação tirou. Vai na resposta porque o shipper a registra no journal, e
+    // sem esse número a repetição some sem deixar rastro — foi assim que ela chegou à
+    // interface sem ninguém perceber. Um valor constantemente alto significa páginas
+    // demoradas demais, e aí o conserto é a coleta ficar mais rápida, não deduplicar mais.
+    deduped,
     itens: distinct.size,
   });
 }

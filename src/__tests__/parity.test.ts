@@ -35,6 +35,8 @@ import {
 const ITEM_ID = 501;
 /** Visto no mercado um dia, sem anúncio hoje: a diferença entre os dois filtros. */
 const SOLD_OUT = 909;
+/** A resposta da ingestão de NIDHOGG, guardada para o teste de deduplicação conferir. */
+let nidhoggIngest: Record<string, unknown>;
 /**
  * Dois itens que só existem no armazém do `storage-test.rrf` — 11568 no do Kafra (100
  * unidades), 12580 no do clã (140).
@@ -136,12 +138,22 @@ beforeAll(async () => {
   });
 
   /** O mesmo item, com outro preço, em NIDHOGG — para provar que os dois não se misturam. */
-  await ingest({
+  //
+  // Leva junto a vaga REPETIDA do teste de deduplicação. Dentro deste crawl, e não num
+  // extra: um crawl de `trading` SUBSTITUI o retrato inteiro do servidor, então semear a
+  // repetição à parte apagaria o mundo que os outros testes leem — foi o que aconteceu.
+  const anuncios = [900, 950].map((price, i) =>
+    anuncio(ITEM_ID, "Poção Vermelha", price, i, "nid"),
+  );
+  nidhoggIngest = await ingest({
     dataset: "trading",
     server: "NIDHOGG",
     startedAt: 1_700_000_200,
     crawlId: "seed-trading-nidhogg",
-    rows: [900, 950].map((price, i) => anuncio(ITEM_ID, "Poção Vermelha", price, i, "nid")),
+    // O primeiro anúncio entra TRÊS vezes, como o site devolve quando a mesma vaga
+    // reaparece em duas páginas. Depois de deduplicado o retrato é idêntico ao de antes,
+    // que é justamente o ponto: os outros testes deste arquivo não enxergam diferença.
+    rows: [anuncios[0]!, anuncios[0]!, ...anuncios],
   });
 });
 
@@ -672,6 +684,31 @@ describe("preços em lote", () => {
     expect(r.nextTradingAt).toBe(
       r.freshness.tradingAt + tradingEveryMinFor(DEFAULT_SERVER) * 60,
     );
+  });
+
+  /**
+   * Regressão: a mesma vaga de loja aparecendo duas vezes na mesma coleta.
+   *
+   * O `ssi` é o id da vaga e é único dentro de um crawl, mas o crawl chega repetido — as
+   * páginas são buscadas em instantes diferentes e o mercado se mexe entre elas, então a
+   * mesma vaga reaparece na página seguinte. No SQLite isso morria na
+   * `PRIMARY KEY (snapshot_id, ssi)`; ao mover os anúncios para o blob no R2 a garantia
+   * saiu junto e a repetição chegou à interface — a mesma oferta listada 2 e 3 vezes.
+   *
+   * O que importa não é só a listagem: o mesmo array alimenta o rollup, então cada
+   * repetição também contava como mais um anúncio e puxava os percentis.
+   */
+  it("a mesma vaga repetida na coleta vira um anúncio só", async () => {
+    // Quatro linhas no lote, duas delas repetição da mesma vaga.
+    expect(nidhoggIngest["rows"]).toBe(4);
+    expect(nidhoggIngest["deduped"]).toBe(2);
+
+    // E o que a interface lê: dois anúncios, não quatro. Era isto que aparecia repetido na
+    // tela — a mesma loja, o mesmo vendedor, o mesmo preço, duas e três vezes.
+    const r = (await getJson(`/api/v1/items/${ITEM_ID}/offers?server=NIDHOGG`)) as {
+      offers: Array<{ price: number }>;
+    };
+    expect(r.offers.map((o) => o.price)).toEqual([900, 950]);
   });
 
   it("a hora exata do agendador manda mais que a estimativa", () => {
