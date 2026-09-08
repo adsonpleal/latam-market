@@ -40,7 +40,7 @@ import {
 } from "../core/taxonomy.js";
 import { serviceStatus } from "../core/status.js";
 import { SERVERS, parseServer, type Server } from "../core/servers.js";
-import { config } from "../config.js";
+import { config, tradingEveryMinFor } from "../config.js";
 import { CACHE, etagFor, json, notModified, NO_STORE } from "../edge/respond.js";
 
 export interface RouteContext {
@@ -168,7 +168,10 @@ function nextTradingAt(
   return nextTradingRun(
     ctx.nextRun?.("trading", server) ?? null,
     tradingAt,
-    config.crawl.tradingEveryMin,
+    // Por servidor: a cadência de `trading` pode diferir entre eles, e este número vira o
+    // `max-age` que faz a aba dormir até a próxima coleta. Usar o do outro servidor faria
+    // o navegador acordar cedo demais (desperdício) ou tarde demais (dado velho na tela).
+    tradingEveryMinFor(server),
   );
 }
 

@@ -91,6 +91,16 @@
     "MAX_MCP_BODY": "1048576",
     "MAX_REPLAY_BYTES": "8388608",
     "MAX_RESULTS": "100",
-    "CRAWL_TRADING_MIN": "30"
+    "CRAWL_TRADING_MIN": "30",
+    // Cadência por servidor. FREYA carrega ~4x mais linhas que NIDHOGG por ~1,6x as
+    // requisições, então não faz sentido os dois esperarem a mesma coisa.
+    //
+    // ⚠ EM AVALIAÇÃO (2026-09-08). Os 15min de FREYA ficam ACIMA do descanso de uma saída
+    // recusada, que é o que derrubou a cadência de 15 hoje de manhã: 4 coletas descartadas
+    // e o frescor indo de 3min para 65. A diferença agora é que só FREYA corre esse risco
+    // e NIDHOGG saiu da frente. Se voltarem a aparecer coletas descartadas, o caminho de
+    // volta é apagar estas duas linhas.
+    "CRAWL_TRADING_MIN_FREYA": "15",
+    "CRAWL_TRADING_MIN_NIDHOGG": "60"
   }
 }

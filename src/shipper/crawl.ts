@@ -13,7 +13,7 @@
 import { randomUUID } from "node:crypto";
 
 import { loadCollector } from "../collect/load.js";
-import { config } from "../config.js";
+import { config, tradingEveryMinFor } from "../config.js";
 import type { Dataset } from "../core/datasets.js";
 import type { Server } from "../core/servers.js";
 import type { Row } from "../store/rows.js";
@@ -57,12 +57,16 @@ async function withDeadline<T>(work: Promise<T>, ms: number, label: string): Pro
  *
  * É o próprio período dela: uma coleta que passa do intervalo em que deveria rodar de novo
  * já falhou pela definição do agendador — a próxima seria pulada de qualquer jeito. Assim
- * o prazo acompanha sozinho uma mudança de cadência (30min → 10min) em vez de virar uma
- * constante que alguém esquece de ajustar.
+ * o prazo acompanha sozinho uma mudança de cadência em vez de virar uma constante que
+ * alguém esquece de ajustar.
+ *
+ * Por SERVIDOR, porque a cadência é: com FREYA de 15 em 15 e NIDHOGG de hora em hora, um
+ * prazo global daria a um dos dois o período do outro — ou cortando coleta boa, ou
+ * deixando uma travada segurar o agendador muito além do que ela tinha para viver.
  */
-function deadlineFor(dataset: Dataset): number {
+function deadlineFor(dataset: Dataset, server: Server): number {
   const minutes =
-    dataset === "trading" ? config.crawl.tradingEveryMin : config.crawl.marketEveryMin;
+    dataset === "trading" ? tradingEveryMinFor(server) : config.crawl.marketEveryMin;
   return minutes * 60_000;
 }
 
@@ -85,7 +89,7 @@ export async function runCrawl(
    * Injetável só para o teste: em produção o prazo é o período da própria coleta, e o
    * teste não pode esperar 30 minutos para provar que o prazo existe.
    */
-  deadlineMs = deadlineFor(dataset),
+  deadlineMs = deadlineFor(dataset, server),
 ): Promise<CrawlOutcome> {
   const startedAt = Math.floor(Date.now() / 1000);
   const started = Date.now();

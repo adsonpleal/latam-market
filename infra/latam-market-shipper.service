@@ -35,6 +35,23 @@ WorkingDirectory=/opt/latam-market-shipper
 Environment=NODE_ENV=production
 Environment=PUBLIC_URL=https://mercado.latam-tools.com.br
 Environment=CRAWL_ENABLED=1
+
+# Cadência por servidor. FREYA traz ~4x mais linhas que NIDHOGG por ~1,6x as requisições,
+# então prendê-los à mesma cadência gasta orçamento no mercado menor para adiar o maior.
+#
+# ⚠ EM AVALIAÇÃO (2026-09-08). Os 15min de FREYA ficam ACIMA do descanso de uma saída
+# recusada — e foi exatamente isso que derrubou a cadência de 15 hoje de manhã: 5 coletas
+# boas contra 4 descartadas e 5 puladas, com o frescor indo de 3min para 65. O que mudou é
+# que agora só FREYA corre o risco e NIDHOGG saiu da frente dele.
+#
+# Sinal de que não deu certo, no journal: `descartando a coleta` voltando a aparecer, ou
+# `pulado — ... ainda rodando` se acumulando. O caminho de volta é apagar estas duas linhas
+# (as duas ficam com o padrão de `CRAWL_TRADING_MIN`).
+#
+# ⚠ Este arquivo NÃO é instalado pelo deploy — mudou aqui, tem que copiar para
+# /etc/systemd/system/ e recarregar. Ver o cabeçalho.
+Environment=CRAWL_TRADING_MIN_FREYA=15
+Environment=CRAWL_TRADING_MIN_NIDHOGG=60
 # ⚠ O INGEST_SECRET NÃO fica aqui: este arquivo é público. Vai por
 # `systemctl edit latam-market-shipper`, num drop-in fora do repositório, e tem que ser o
 # mesmo valor de `wrangler secret put INGEST_SECRET`.

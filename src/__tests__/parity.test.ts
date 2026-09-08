@@ -14,7 +14,8 @@ import { SELF } from "cloudflare:test";
 import { beforeAll, describe, expect, it } from "vitest";
 
 import { nextTradingRun } from "../core/schedule.js";
-import { config } from "../config.js";
+import { config, tradingEveryMinFor } from "../config.js";
+import { DEFAULT_SERVER } from "../core/servers.js";
 import type { MarketPriceRow, TradingRow } from "../store/rows.js";
 import {
   applyMigrations,
@@ -664,8 +665,12 @@ describe("preços em lote", () => {
       nextTradingAt: number;
       freshness: { tradingAt: number };
     };
+    // Pela cadência DO SERVIDOR consultado, não pela global: a rota não passa `server`,
+    // então responde pelo padrão — e é a cadência dele que vira o `max-age` que faz a aba
+    // dormir. Com FREYA e NIDHOGG em cadências diferentes, comparar com a global passaria
+    // a reprovar sem nada estar errado.
     expect(r.nextTradingAt).toBe(
-      r.freshness.tradingAt + config.crawl.tradingEveryMin * 60,
+      r.freshness.tradingAt + tradingEveryMinFor(DEFAULT_SERVER) * 60,
     );
   });
 

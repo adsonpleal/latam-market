@@ -105,9 +105,23 @@ export const config = {
      * decisão deste repositório: os números vivem no do coletor, junto do que os mediu.
      */
     tradingEveryMin: 30,
+    /**
+     * Cadência por servidor, quando um deles merece atenção diferente do outro.
+     *
+     * Preenchido por `CRAWL_TRADING_MIN_<SERVIDOR>`; o que não aparecer aqui usa o
+     * `tradingEveryMin` acima. Existe porque os dois mercados não custam o mesmo nem valem
+     * o mesmo: FREYA traz ~4x mais linhas que NIDHOGG por ~1,6x as requisições, então
+     * prendê-los à mesma cadência gasta orçamento no mercado menor para adiar o maior.
+     */
+    tradingEveryMinByServer: {} as Record<string, number>,
     marketEveryMin: 360,
   },
 };
+
+/** A cadência que vale para este servidor: a dele, ou o padrão. */
+export function tradingEveryMinFor(server: string): number {
+  return config.crawl.tradingEveryMinByServer[server] ?? config.crawl.tradingEveryMin;
+}
 
 /**
  * Preenche a configuração a partir do ambiente.
@@ -137,6 +151,16 @@ export function applyEnv(env: EnvSource): void {
   config.collectorPath = str(env, "COLLECTOR_PATH", "");
   config.crawl.enabled = env["CRAWL_ENABLED"] === "1";
   config.crawl.tradingEveryMin = num(env, "CRAWL_TRADING_MIN", 30);
+  // Lido por prefixo, e não por uma lista de servidores conhecidos: `SERVERS` mora em
+  // `core/` e este arquivo é lido pelos dois lados (Worker e shipper) antes de qualquer
+  // coisa. Um nome de servidor novo passa a ter cadência própria sem tocar aqui.
+  config.crawl.tradingEveryMinByServer = {};
+  for (const key of Object.keys(env)) {
+    const match = /^CRAWL_TRADING_MIN_(.+)$/.exec(key);
+    if (!match) continue;
+    const minutes = num(env, key, 0);
+    if (minutes > 0) config.crawl.tradingEveryMinByServer[match[1]!] = minutes;
+  }
   config.crawl.marketEveryMin = num(env, "CRAWL_MARKET_MIN", 360);
 
   lastEnv = env;

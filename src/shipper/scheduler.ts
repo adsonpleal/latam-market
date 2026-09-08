@@ -18,7 +18,7 @@
 
 import type { Dataset } from "../core/datasets.js";
 import { SERVERS, type Server } from "../core/servers.js";
-import { config } from "../config.js";
+import { config, tradingEveryMinFor } from "../config.js";
 import { runCrawl, type CrawlOutcome } from "./crawl.js";
 import type { ShipTarget } from "./ship.js";
 
@@ -129,19 +129,29 @@ export function startScheduler(target: ShipTarget): Scheduler {
 
   // A primeira coleta não sai junto com o boot: um restart em laço (deploy quebrado, OOM)
   // viraria uma rajada contra o site.
-  // Um agendamento por (dataset, servidor). Os primeiros disparos são espaçados de
-  // propósito: com os dois servidores na mesma cadência, deixá-los coincidir faria o
-  // segundo bater no `active !== null` e ser pulado inteiro, de hora em hora, para sempre.
-  // O deslocamento é metade da janela — o mais longe possível um do outro.
-  const schedules: Array<[Dataset, number, number]> = [
-    ["trading", config.crawl.tradingEveryMin, 2],
-    ["market-price", config.crawl.marketEveryMin, 12],
+  //
+  // Um agendamento por (dataset, servidor), e a cadência é POR SERVIDOR: FREYA pode rodar
+  // de 15 em 15 enquanto NIDHOGG roda de hora em hora.
+  //
+  // Os primeiros disparos são espaçados de propósito — deixá-los coincidir faria o segundo
+  // bater no `active !== null` e ser pulado inteiro, para sempre. O deslocamento é uma
+  // fração da MENOR cadência do dataset, não da própria: com 15 e 60, espaçar por 60/2
+  // colocaria NIDHOGG em cima do FREYA das 30. Dividir a menor janela é o que garante que
+  // cada um comece no meio do intervalo do outro. Com cadências diferentes eles ainda vão
+  // se cruzar de vez em quando — aí o `active` decide, que é para isso que ele existe.
+  const schedules: Array<[Dataset, number]> = [
+    ["trading", 2],
+    ["market-price", 12],
   ];
-  for (const [dataset, everyMin, firstMin] of schedules) {
+  for (const [dataset, firstMin] of schedules) {
+    const everyFor = (server: Server): number =>
+      dataset === "trading" ? tradingEveryMinFor(server) : config.crawl.marketEveryMin;
+    const smallest = Math.min(...SERVERS.map(everyFor));
+
     SERVERS.forEach((server, i) => {
-      const offset = (everyMin / SERVERS.length) * i;
+      const offset = (smallest / SERVERS.length) * i;
       every(
-        everyMin,
+        everyFor(server),
         () => start(dataset, server),
         (firstMin + offset) * 60_000,
         (atMs) => nextRuns.set(key(dataset, server), Math.round(atMs / 1000)),
@@ -150,8 +160,9 @@ export function startScheduler(target: ShipTarget): Scheduler {
   }
 
   console.log(
-    `[crawl] agendado: trading a cada ${config.crawl.tradingEveryMin}min, ` +
-      `market-price a cada ${config.crawl.marketEveryMin}min, ${SERVERS.join(" e ")}`,
+    "[crawl] agendado: " +
+      SERVERS.map((s) => `${s} trading a cada ${tradingEveryMinFor(s)}min`).join(", ") +
+      `, market-price a cada ${config.crawl.marketEveryMin}min`,
   );
 
   return {
