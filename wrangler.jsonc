@@ -10,8 +10,24 @@
   "compatibility_date": "2026-08-22",
   "compatibility_flags": ["nodejs_compat"],
 
-  // SEM `routes` de propósito. Até a fase 4 o Worker só existe em *.workers.dev; o domínio
-  // continua apontando para o EC2, e é isso que torna o rollback uma troca de DNS.
+  // O cutover: o domínio passa a ser servido pelo Worker.
+  //
+  // `custom_domain: true`, e NÃO um route comum. Um route só intercepta o que já passa
+  // pela Cloudflare, e o registro estava cinza — apontando direto para 18.231.251.11, com
+  // o Caddy respondendo e nenhum `cf-ray` na resposta. Um route ali teria publicado sem
+  // erro nenhum e o site continuaria saindo do EC2: deploy verde, nada mudou.
+  //
+  // Com `custom_domain` o próprio wrangler passa a administrar o registro de DNS, o que
+  // SUBSTITUI o A que apontava para o EC2.
+  //
+  // ⚠ REVERSÃO: não basta tirar daqui. Como o registro passou a ser da Cloudflare, voltar
+  // é apagar o domínio personalizado e recriar o A:
+  //
+  //     mercado.latam-tools.com.br  A  18.231.251.11   (DNS only, nuvem cinza)
+  //
+  // O endereço fica escrito porque é a única coisa que a reversão precisa saber e que
+  // deixa de estar em qualquer lugar assim que o registro é trocado.
+  "routes": [{ "pattern": "mercado.latam-tools.com.br", "custom_domain": true }],
 
   "assets": {
     "directory": "./web/dist",
