@@ -75,6 +75,8 @@ export interface CrawlOutcome {
   server: Server;
   snapshotId: number | null;
   rows: number;
+  /** Linhas absorvidas pelo agrupamento na ingestão. */
+  grouped: number;
   failures: number;
   durationMs: number;
   error?: string;
@@ -98,6 +100,7 @@ export async function runCrawl(
     server,
     snapshotId: null,
     rows: 0,
+    grouped: 0,
     failures: 0,
     durationMs: Date.now() - started,
     error,
@@ -158,6 +161,7 @@ export async function runCrawl(
       server,
       snapshotId: shipped.snapshotId,
       rows: shipped.rows,
+      grouped: shipped.grouped ?? 0,
       failures: report.failures,
       durationMs: Date.now() - started,
     };

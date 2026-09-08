@@ -77,7 +77,8 @@ export function startScheduler(target: ShipTarget): Scheduler {
         const secs = (outcome.durationMs / 1000).toFixed(0);
         console.log(
           `[crawl] ${dataset}/${server}: ${outcome.rows} linhas em ${secs}s ` +
-            `(snapshot ${outcome.snapshotId}, ${outcome.failures} falha(s))`,
+            `(snapshot ${outcome.snapshotId}, ${outcome.failures} falha(s)` +
+            `${outcome.grouped > 0 ? `, ${outcome.grouped} agrupada(s)` : ""})`,
         );
       })
       .catch((err: unknown) => console.error(`[crawl] ${dataset}/${server} quebrou:`, err))

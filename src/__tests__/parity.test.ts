@@ -145,15 +145,22 @@ beforeAll(async () => {
   const anuncios = [900, 950].map((price, i) =>
     anuncio(ITEM_ID, "Poção Vermelha", price, i, "nid"),
   );
+  // Três VAGAS a mais na Loja 0, que já está aí: mesmo vendedor, mesma loja, mesmo preço,
+  // `ssi` diferente em cada uma. É o que o site devolve quando um vendedor põe três cópias
+  // do item à venda — três vagas, uma peça em cada, e não três lojas.
+  const mesmaLoja = [1, 2, 3].map((n) => ({
+    ...anuncio(ITEM_ID, "Poção Vermelha", 900, 0, "nid"),
+    ssi: `nid-vaga-${n}`,
+  }));
   nidhoggIngest = await ingest({
     dataset: "trading",
     server: "NIDHOGG",
     startedAt: 1_700_000_200,
     crawlId: "seed-trading-nidhogg",
-    // O primeiro anúncio entra TRÊS vezes, como o site devolve quando a mesma vaga
-    // reaparece em duas páginas. Depois de deduplicado o retrato é idêntico ao de antes,
-    // que é justamente o ponto: os outros testes deste arquivo não enxergam diferença.
-    rows: [anuncios[0]!, anuncios[0]!, ...anuncios],
+    // As duas lojas, mais as três vagas extras da primeira. Depois de agrupado o retrato
+    // tem os mesmos DOIS anúncios de sempre, que é justamente o ponto: os outros testes
+    // deste arquivo não enxergam diferença.
+    rows: [...anuncios, ...mesmaLoja],
   });
 });
 
@@ -698,17 +705,20 @@ describe("preços em lote", () => {
    * O que importa não é só a listagem: o mesmo array alimenta o rollup, então cada
    * repetição também contava como mais um anúncio e puxava os percentis.
    */
-  it("a mesma vaga repetida na coleta vira um anúncio só", async () => {
-    // Quatro linhas no lote, duas delas repetição da mesma vaga.
-    expect(nidhoggIngest["rows"]).toBe(4);
-    expect(nidhoggIngest["deduped"]).toBe(2);
+  it("três vagas da mesma loja viram um anúncio só, somando as peças", async () => {
+    // Cinco linhas no lote: duas lojas, e mais três vagas da PRIMEIRA delas.
+    expect(nidhoggIngest["rows"]).toBe(5);
+    expect(nidhoggIngest["grouped"]).toBe(3);
 
-    // E o que a interface lê: dois anúncios, não quatro. Era isto que aparecia repetido na
-    // tela — a mesma loja, o mesmo vendedor, o mesmo preço, duas e três vezes.
+    // O que a interface lê: dois anúncios, não cinco. Era isto que aparecia repetido na
+    // tela — a mesma loja, o mesmo vendedor, o mesmo preço, três linhas seguidas num
+    // painel que se chama "lojas mais baratas".
     const r = (await getJson(`/api/v1/items/${ITEM_ID}/offers?server=NIDHOGG`)) as {
-      offers: Array<{ price: number }>;
+      offers: Array<{ price: number; qty: number; store: string }>;
     };
     expect(r.offers.map((o) => o.price)).toEqual([900, 950]);
+    // A quantidade não se perde ao juntar: as quatro vagas da Loja 0 somam 40 peças.
+    expect(r.offers[0]).toMatchObject({ price: 900, qty: 40, store: "Loja 0" });
   });
 
   it("a hora exata do agendador manda mais que a estimativa", () => {

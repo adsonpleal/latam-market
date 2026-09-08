@@ -210,38 +210,65 @@ export async function handleIngest(request: Request, env: Env): Promise<Response
   for (const itemId of distinct.keys()) inMarket.add(itemId);
 
   let blob: SnapshotBlob;
-  /** Quantas linhas a deduplicação descartou. Publicado na resposta — ver o `return`. */
-  let deduped = 0;
+  /** Quantas linhas o agrupamento absorveu. Publicado na resposta — ver o `return`. */
+  let grouped = 0;
   if (header.dataset === "trading") {
-    // Deduplicado por `ssi`, que é o id da VAGA DE LOJA e portanto único dentro de uma
-    // coleta. Última ocorrência vence.
+    // Um anúncio é UMA LOJA OFERECENDO A UM PREÇO — não uma vaga de loja.
     //
-    // Isto existia e se perdeu na migração. A tabela `listing` do SQLite era
-    // `PRIMARY KEY (snapshot_id, ssi)` com `INSERT OR REPLACE`: o banco absorvia repetição
-    // sem ninguém precisar pensar nela. Ao tirar os anúncios do D1 e passá-los para o blob
-    // no R2, a garantia saiu junto — o blob serializa o que chegar.
+    // O site devolve uma linha por VAGA (`ssi`), e um vendedor com três cópias do mesmo
+    // item ocupa três vagas: mesmo preço, mesma loja, mesmo vendedor, `itemCnt` 1 em cada.
+    // Repassar isso adiante deixava a mesma loja três vezes seguidas no painel "lojas mais
+    // baratas" — que é uma lista de LOJAS, e onde um vendedor sozinho empurrava todos os
+    // outros para fora. Também fazia o campo rotulado "Lojas" na interface dizer 3 quando
+    // havia 1.
     //
-    // E chega repetido: as páginas de uma coleta são buscadas em instantes diferentes
-    // (minutos, com as lanes lentas), o mercado se mexe entre elas, e a mesma vaga
-    // reaparece na página seguinte. Sem chave, a mesma oferta era listada 2 ou 3 vezes na
-    // interface — e, pior, contada 2 ou 3 vezes no `rollupStats` logo abaixo, inflando o
-    // número de anúncios e puxando os percentis para o preço repetido.
-    const bySsi = new Map<string, ListingRow>();
+    // E puxava a mediana, contra a intenção que `core/prices.ts` já declarava ao lado do
+    // cálculo: "uma loja com 300 peças não deve dominar a mediana". Uma loja com 300 peças
+    // em UMA vaga já contava uma vez; a mesma loja com 3 peças em três vagas contava três.
+    // Agora as duas contam uma.
+    //
+    // `slotMax` entra na chave porque descreve o item, não a vaga: a mesma loja vendendo a
+    // versão com e sem slot ao mesmo preço são duas ofertas diferentes, e juntá-las
+    // esconderia uma delas.
+    //
+    // Isto também absorve a repetição da MESMA vaga, que a migração deixou passar: a
+    // tabela `listing` do SQLite era `PRIMARY KEY (snapshot_id, ssi)` com `INSERT OR
+    // REPLACE` e o banco a engolia sozinho; o blob no R2 não tem chave nenhuma. Acontece
+    // quando as páginas de uma coleta demoram e o mercado se mexe entre elas.
+    const porOferta = new Map<string, ListingRow>();
     for (const row of rows as TradingRow[]) {
-      bySsi.set(row.ssi, {
+      // O site manda `""` quando o item não tem slot, e isso é NULL, não string vazia.
+      const slotMax = row.slotMaxCount || null;
+      // ⚠ `itemId` PRIMEIRO na chave: este laço percorre a coleta INTEIRA, com todos os
+      // itens juntos — o agrupamento por item só acontece depois, no `groupByItem`. Sem ele,
+      // dois itens diferentes ao mesmo preço na mesma loja virariam um só, e um deles
+      // sumiria do mercado.
+      const key = JSON.stringify([
+        row.itemId,
+        row.itemSellerCharName,
+        row.storeName,
+        row.itemPrice,
+        slotMax ?? "",
+      ]);
+      const seen = porOferta.get(key);
+      if (seen) {
+        // Mesma oferta em outra vaga: o que soma é a quantidade disponível.
+        seen.cnt += row.itemCnt;
+        continue;
+      }
+      porOferta.set(key, {
         ssi: row.ssi,
         itemId: row.itemId,
         price: row.itemPrice,
         cnt: row.itemCnt,
-        // O site manda `""` quando o item não tem slot, e isso é NULL, não string vazia.
-        slotMax: row.slotMaxCount || null,
+        slotMax,
         storeName: row.storeName,
         seller: row.itemSellerCharName,
         mapId: row.mapId,
       });
     }
-    const listings: ListingRow[] = [...bySsi.values()];
-    deduped = rows.length - listings.length;
+    const listings: ListingRow[] = [...porOferta.values()];
+    grouped = rows.length - listings.length;
     statements.push(
       ...insertStats(header.server, header.startedAt, rollupStats(groupByItem(listings))),
     );
@@ -272,7 +299,7 @@ export async function handleIngest(request: Request, env: Env): Promise<Response
       });
     }
     const points: PricePoint[] = [...byItem.values()];
-    deduped = rows.length - points.length;
+    grouped = rows.length - points.length;
     statements.push(...upsertPricePoints(header.server, snapshot.id, header.startedAt, points));
     blob = toBlob({
       server: header.server,
@@ -302,11 +329,10 @@ export async function handleIngest(request: Request, env: Env): Promise<Response
     snapshotId: snapshot.id,
     duplicate: false,
     rows: rows.length,
-    // O que a deduplicação tirou. Vai na resposta porque o shipper a registra no journal, e
-    // sem esse número a repetição some sem deixar rastro — foi assim que ela chegou à
-    // interface sem ninguém perceber. Um valor constantemente alto significa páginas
-    // demoradas demais, e aí o conserto é a coleta ficar mais rápida, não deduplicar mais.
-    deduped,
+    // Quantas linhas o agrupamento absorveu. Vai na resposta E é registrada pelo shipper no
+    // journal: sem um número visível a repetição some sem rastro, que foi exatamente como
+    // ela chegou à interface sem ninguém perceber.
+    grouped,
     itens: distinct.size,
   });
 }

@@ -41,6 +41,8 @@ export interface ShipResult {
   snapshotId: number;
   duplicate: boolean;
   rows: number;
+  /** Linhas que o agrupamento por (item, loja, preço) absorveu. Ver `edge/ingest.ts`. */
+  grouped?: number;
 }
 
 export interface ShipTarget {
