@@ -31,8 +31,21 @@ export interface Scheduler {
   nextRun(dataset: Dataset, server: Server): number | null;
 }
 
-/** Jitter para duas instâncias (ou dois reboots) não baterem no site no mesmo minuto. */
-const jitterMs = (): number => Math.round((Math.random() - 0.5) * 10 * 60_000);
+/**
+ * Jitter para duas instâncias (ou dois reboots) não baterem no site no mesmo minuto.
+ *
+ * PROPORCIONAL ao intervalo, e não ±5min fixos como era. Os ±5min nasceram com a cadência
+ * de 30min, onde são 17% da janela — folga suficiente para espalhar, pequena o bastante
+ * para não desarrumar a ordem. A mesma constante numa cadência de 10min viraria ±50%: o
+ * intervalo real oscilaria entre 5 e 15 minutos, e os dois servidores — que o agendador
+ * afasta de meia janela justamente para não se cruzarem — passariam a se cruzar toda hora.
+ * Como só uma coleta roda por vez, cruzar significa a segunda ser PULADA: menos dado, não
+ * mais, que é o oposto de por que se mexe na cadência.
+ *
+ * ±10% mantém a proporção em qualquer cadência. Com 30min são ±3min; com 15, ±1,5min.
+ */
+const jitterMs = (everyMin: number): number =>
+  Math.round((Math.random() - 0.5) * 0.2 * everyMin * 60_000);
 
 export function startScheduler(target: ShipTarget): Scheduler {
   const timers: Array<{ handle: NodeJS.Timeout | null }> = [];
@@ -99,7 +112,7 @@ export function startScheduler(target: ShipTarget): Scheduler {
         if (stopped) return;
         // Reagenda ANTES de disparar: o envio precisa saber a hora do próximo disparo
         // para carimbá-la no cabeçalho, e é dela que sai o `nextTradingAt` do navegador.
-        schedule(minutes * 60_000 + jitterMs());
+        schedule(minutes * 60_000 + jitterMs(minutes));
         fn();
       }, wait);
       // ⚠ SEM `unref()`. Estes timers são a ÚNICA coisa que segura o event loop deste

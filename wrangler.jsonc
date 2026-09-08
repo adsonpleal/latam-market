@@ -85,6 +85,6 @@
     "MAX_MCP_BODY": "1048576",
     "MAX_REPLAY_BYTES": "8388608",
     "MAX_RESULTS": "100",
-    "CRAWL_TRADING_MIN": "30"
+    "CRAWL_TRADING_MIN": "15"
   }
 }

@@ -85,7 +85,23 @@ export const config = {
   crawl: {
     /** Liga o agendador do shipper. Desligado em dev para não sair coletando sozinho. */
     enabled: false,
-    tradingEveryMin: 30,
+    /**
+     * 15min, e não 30 nem 10.
+     *
+     * O teto é a vazão de saída, e ela é fixa: o WARP devolve pouquíssimos endereços
+     * distintos — 14 identidades pediram 8 lanes e deram 3 IPs —, e cada IP aguenta ~20
+     * req/min antes de o endpoint responder 429. Medido em 2026-09-08 com `rate-probe`:
+     * 20 req/min limpo, 30 req/min bloqueou depois de 50 requisições.
+     *
+     * Uma coleta de `trading` em FREYA são ~180 requisições, ~4,5min nas 3 lanes. A 10min
+     * o segundo servidor entra em T+5 (meia janela) e pegaria a primeira ainda rodando —
+     * seria PULADO. E o preço de errar subiu: o bloqueio dura mais de 15 minutos, não os
+     * 60s que o coletor supunha.
+     *
+     * 15min dobra o frescor contra os 30 e mantém a coleta de FREYA bem dentro da meia
+     * janela (7,5min). Descer para 10 exige mais IPs, não mais paciência.
+     */
+    tradingEveryMin: 15,
     marketEveryMin: 360,
   },
 };
@@ -117,7 +133,7 @@ export function applyEnv(env: EnvSource): void {
 
   config.collectorPath = str(env, "COLLECTOR_PATH", "");
   config.crawl.enabled = env["CRAWL_ENABLED"] === "1";
-  config.crawl.tradingEveryMin = num(env, "CRAWL_TRADING_MIN", 30);
+  config.crawl.tradingEveryMin = num(env, "CRAWL_TRADING_MIN", 15);
   config.crawl.marketEveryMin = num(env, "CRAWL_MARKET_MIN", 360);
 
   lastEnv = env;
