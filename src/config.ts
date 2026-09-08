@@ -86,22 +86,25 @@ export const config = {
     /** Liga o agendador do shipper. Desligado em dev para não sair coletando sozinho. */
     enabled: false,
     /**
-     * 15min, e não 30 nem 10.
+     * 30min. Foi 15 por uma hora e meia, e a tentativa é o motivo do número.
      *
-     * O teto é a vazão de saída, e ela é fixa: o WARP devolve pouquíssimos endereços
-     * distintos — 14 identidades pediram 8 lanes e deram 3 IPs —, e cada IP aguenta ~20
-     * req/min antes de o endpoint responder 429. Medido em 2026-09-08 com `rate-probe`:
-     * 20 req/min limpo, 30 req/min bloqueou depois de 50 requisições.
+     * O piso da cadência NÃO é quanto tempo uma coleta leva — é quanto tempo o coletor
+     * deixa uma saída de molho quando ela é recusada. Se a cadência for parecida com esse
+     * descanso, a saída que tropeça só volta na coleta seguinte: perde a que está rodando
+     * inteira. E some justamente quando faz mais falta, porque a carga dela vai para as
+     * poucas outras, que também tropeçam. Cascata.
      *
-     * Uma coleta de `trading` em FREYA são ~180 requisições, ~4,5min nas 3 lanes. A 10min
-     * o segundo servidor entra em T+5 (meia janela) e pegaria a primeira ainda rodando —
-     * seria PULADO. E o preço de errar subiu: o bloqueio dura mais de 15 minutos, não os
-     * 60s que o coletor supunha.
+     * Foi o que aconteceu em 2026-09-08 com 15min: 5 coletas boas, 4 DESCARTADAS por
+     * passar de 20% de unidades falhando e 5 puladas por a anterior ainda estar rodando —
+     * o frescor foi de 3min para 65. Pior que os 30min que a mudança queria melhorar.
      *
-     * 15min dobra o frescor contra os 30 e mantém a coleta de FREYA bem dentro da meia
-     * janela (7,5min). Descer para 10 exige mais IPs, não mais paciência.
+     * A regra que sai disso: a cadência tem que ser confortavelmente maior que o descanso,
+     * para uma saída castigada voltar DENTRO do mesmo ciclo.
+     *
+     * Descer daqui exige mais saídas distintas ou um descanso menor, e nenhuma das duas é
+     * decisão deste repositório: os números vivem no do coletor, junto do que os mediu.
      */
-    tradingEveryMin: 15,
+    tradingEveryMin: 30,
     marketEveryMin: 360,
   },
 };
@@ -133,7 +136,7 @@ export function applyEnv(env: EnvSource): void {
 
   config.collectorPath = str(env, "COLLECTOR_PATH", "");
   config.crawl.enabled = env["CRAWL_ENABLED"] === "1";
-  config.crawl.tradingEveryMin = num(env, "CRAWL_TRADING_MIN", 15);
+  config.crawl.tradingEveryMin = num(env, "CRAWL_TRADING_MIN", 30);
   config.crawl.marketEveryMin = num(env, "CRAWL_MARKET_MIN", 360);
 
   lastEnv = env;

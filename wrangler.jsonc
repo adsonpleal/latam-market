@@ -75,16 +75,22 @@
   },
 
   "vars": {
-    // O hostname de *.workers.dev entra enquanto durar a fase encenada: o Worker vive só
-    // lá até o cutover, e sem ele na allowlist toda requisição vira 403 (a defesa contra
-    // DNS rebinding não sabe que aquele nome também é nosso). Sai quando o domínio virar.
-    "ALLOWED_HOSTS": "mercado.latam-tools.com.br,latam-market.adsonpleal.workers.dev,localhost,127.0.0.1",
+    // O hostname de *.workers.dev saiu no cutover, como estava previsto: adicionar o
+    // domínio personalizado APOSENTA o `latam-market.adsonpleal.workers.dev`, que passou a
+    // responder 404 em tudo. Manter um nome morto numa allowlist não é inofensivo — é uma
+    // linha que diz "este endereço é nosso" sobre algo que já não é.
+    //
+    // Foi essa aposentadoria que derrubou a ingestão por sete horas: o shipper ainda
+    // apontava o INGEST_URL para lá, então toda coleta terminava, empacotava ~97 mil
+    // linhas e levava 404 na entrega. Quem for mexer no domínio de novo: o endereço de
+    // ingestão do shipper mora num drop-in na máquina, fora deste repositório.
+    "ALLOWED_HOSTS": "mercado.latam-tools.com.br,localhost,127.0.0.1",
     // `visuais` é o simulador de visuais: o catálogo dele filtra por "já visto no mercado"
     // / "à venda agora" com /api/v1/ids, direto do navegador.
     "ALLOWED_ORIGINS": "https://claude.ai,https://mercado.latam-tools.com.br,https://visuais.latam-tools.com.br,http://localhost:5173",
     "MAX_MCP_BODY": "1048576",
     "MAX_REPLAY_BYTES": "8388608",
     "MAX_RESULTS": "100",
-    "CRAWL_TRADING_MIN": "15"
+    "CRAWL_TRADING_MIN": "30"
   }
 }
