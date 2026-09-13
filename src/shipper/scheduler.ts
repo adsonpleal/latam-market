@@ -79,7 +79,8 @@ export function startScheduler(target: ShipTarget): Scheduler {
           `[crawl] ${dataset}/${server}: ${outcome.rows} linhas em ${secs}s ` +
             `(snapshot ${outcome.snapshotId}, ${outcome.failures} falha(s)` +
             `${outcome.repetidas > 0 ? `, ${outcome.repetidas} repetida(s)` : ""}` +
-            `${outcome.agrupadas > 0 ? `, ${outcome.agrupadas} agrupada(s)` : ""})`,
+            `${outcome.agrupadas > 0 ? `, ${outcome.agrupadas} agrupada(s)` : ""}` +
+            `${outcome.descartadas > 0 ? `, ${outcome.descartadas} descartada(s) no coletor` : ""})`,
         );
       })
       .catch((err: unknown) => console.error(`[crawl] ${dataset}/${server} quebrou:`, err))

@@ -34,6 +34,14 @@ export interface CrawlRequest {
    * **Não lança.** Quem implementa chama isto de dentro do próprio laço, onde uma exceção
    * viraria "esta unidade falhou" — classificando um erro de banco como erro de coleta.
    * Quem grava é responsável por capturar o próprio erro e decidir o que fazer com ele.
+   *
+   * **Sem repetição dentro de uma `crawl()`.** As linhas entregues numa mesma coleta são
+   * únicas por `ssi` (`trading`) ou por `itemId` (`market-price`), e fica a primeira
+   * ocorrência. A cobertura de termos do coletor se sobrepõe, então sem isso cada anúncio
+   * chegaria umas cinco vezes. Primeira e não última porque um lote entregue não se retira:
+   * a observação mais tarde de uma vaga, com a quantidade de depois de uma venda, se perde
+   * por uma coleta. O ingest continua deduplicando por conta própria (última vence) — é a
+   * defesa no ponto de commit, e é o `repetidas` dele que acusa se esta garantia quebrar.
    */
   onRows: (rows: Row[]) => void;
 }
@@ -43,6 +51,8 @@ export interface CrawlReport {
   planned: number;
   /** Quantas delas falharam. Quem chamou decide se a coleta ainda vale. */
   failures: number;
+  /** Quantas linhas foram descartadas por repetir uma já entregue nesta coleta. */
+  repeated: number;
 }
 
 export interface Collector {

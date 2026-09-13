@@ -79,6 +79,12 @@ export interface CrawlOutcome {
   repetidas: number;
   /** Vagas distintas fundidas numa oferta só. Rotina. */
   agrupadas: number;
+  /**
+   * Cópias que o PRÓPRIO coletor descartou antes de enviar (`CrawlReport.repeated`). Rotina:
+   * é a sobreposição da cobertura de termos. Não confundir com `repetidas`, que é o que
+   * escapou dele e chegou ao ingest.
+   */
+  descartadas: number;
   failures: number;
   durationMs: number;
   error?: string;
@@ -104,6 +110,7 @@ export async function runCrawl(
     rows: 0,
     repetidas: 0,
     agrupadas: 0,
+    descartadas: 0,
     failures: 0,
     durationMs: Date.now() - started,
     error,
@@ -166,6 +173,9 @@ export async function runCrawl(
       rows: shipped.rows,
       repetidas: shipped.repetidas ?? 0,
       agrupadas: shipped.agrupadas ?? 0,
+      // `?? 0` apesar do tipo: um bundle de coletor anterior ao campo não o manda, e os dois
+      // repositórios não publicam juntos.
+      descartadas: report.repeated ?? 0,
       failures: report.failures,
       durationMs: Date.now() - started,
     };
