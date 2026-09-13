@@ -13,6 +13,11 @@ Mais recente primeiro. A seção do topo é a fonte do post de novidades no Disc
   para não encher o celular, não reavisa enquanto houver loja vendendo, nem se o preço cair.
   Só volta a avisar depois que o item some de todas as lojas e aparece de novo. Para saber
   de queda de preço, os alertas de "cair" e "subir" continuam lá.
+- **A coluna "Un. à venda" voltou a dizer quantas peças há de verdade.** Um equipamento, que
+  não empilha, aparecia com 5 ou 6 unidades numa loja onde havia 1, e o total do item vinha
+  inflado na mesma proporção. A coleta enxerga o mesmo anúncio mais de uma vez, e desde a
+  correção anterior das "lojas repetidas" cada passagem somava a quantidade de novo. Agora
+  cada anúncio conta uma vez. Vale a partir da próxima coleta.
 
 ## 0.12.1 — 2026-09-01
 
