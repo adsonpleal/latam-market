@@ -155,7 +155,13 @@ export function useFavoriteWatch(server: Server): FavoriteWatch {
       // impediria o aviso repetido; isto evita gastar a volta.
       if (stale && reason === "timer") return stale;
 
-      const plan = planAlerts(server, alerts.all, favorites.set, res.prices);
+      const plan = planAlerts(
+        server,
+        alerts.all,
+        favorites.set,
+        res.prices,
+        res.freshness.tradingAt,
+      );
       if (plan.patches.length > 0) alerts.patchMany(plan.patches);
       if (plan.notifications.length === 0) return stale;
 

@@ -22,7 +22,7 @@ import {
 import { useMemo, useState } from "react";
 
 import type { ItemPrice } from "../api/types.js";
-import { gapToTarget } from "../lib/alerts.js";
+import { describeAlert, gapToTarget, usesTarget } from "../lib/alerts.js";
 import {
   TrendArrow,
   discountVsSold,
@@ -149,12 +149,18 @@ function buildColumns(ctx: {
     }),
 
     // --- o alerta ---------------------------------------------------------
-    helper.accessor((row) => orUndefined(row.alert?.targetPrice), {
-      id: "alert",
-      header: "Alerta",
-      ...missingLast,
-      cell: ({ row }) => <AlertCell row={row.original} onEdit={onEditAlert} />,
-    }),
+    // O aviso de "à venda" ordena como alvo zero — é o "a qualquer preço" — e não pelo alvo
+    // antigo que ele guarda sem usar.
+    helper.accessor(
+      (row) =>
+        orUndefined(row.alert && !usesTarget(row.alert.direction) ? 0 : row.alert?.targetPrice),
+      {
+        id: "alert",
+        header: "Alerta",
+        ...missingLast,
+        cell: ({ row }) => <AlertCell row={row.original} onEdit={onEditAlert} />,
+      },
+    ),
     // Negativo é "já passou do alvo", que é a boa notícia — daí `good: "down"`.
     pctCol("gap", "Falta", (row) => gapToTarget(row.alert, row.price?.offers?.min), "down"),
 
@@ -204,7 +210,7 @@ function buildColumns(ctx: {
 function AlertCell({ row, onEdit }: { row: FavoriteRow; onEdit: (itemId: number) => void }) {
   const { alert } = row;
   const state = !alert ? "is-empty" : alert.enabled ? "is-on" : "is-off";
-  const arrow = alert?.direction === "up" ? "↑" : "↓";
+  const described = alert && describeAlert(alert);
 
   return (
     <button
@@ -212,19 +218,10 @@ function AlertCell({ row, onEdit }: { row: FavoriteRow; onEdit: (itemId: number)
       className={`alert-button ${state}`}
       onClick={() => onEdit(row.itemId)}
       title={
-        alert
-          ? `Avisar quando o menor preço ${alert.direction === "down" ? "cair" : "subir"} para ` +
-            `${zeny(alert.targetPrice)} — clique para editar`
-          : "Configurar alerta de preço"
+        described ? `${described.long} — clique para editar` : "Configurar alerta de preço"
       }
     >
-      {alert ? (
-        <>
-          {alert.enabled ? "🔔" : "🔕"} {arrow} {zeny(alert.targetPrice)}
-        </>
-      ) : (
-        "Configurar"
-      )}
+      {alert && described ? `${alert.enabled ? "🔔" : "🔕"} ${described.short}` : "Configurar"}
     </button>
   );
 }

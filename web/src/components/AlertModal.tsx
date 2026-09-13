@@ -3,7 +3,8 @@
  *
  * Duas direções porque este app serve os dois lados: quem compra quer saber que baixou,
  * quem vende quer saber que subiu — e a tela de detalhe já pergunta "por quanto devo
- * vender?".
+ * vender?". A terceira opção, "à venda", é para o item raro, que se compra a qualquer preço
+ * e cuja pergunta é só "apareceu?"; ela esconde o campo de alvo, que ali não significa nada.
  *
  * O servidor aparece escrito porque o alvo pertence a ele. FREYA e NIDHOGG cotam o mesmo
  * item por preços muito diferentes, e um alvo herdado do outro mercado dispararia na hora
@@ -13,6 +14,7 @@
 import { useState } from "react";
 
 import type { Server } from "../api/client.js";
+import { usesTarget } from "../lib/alerts.js";
 import { zeny } from "../lib/format.js";
 import type { Alert, Direction } from "../lib/persist.js";
 import { Modal } from "./Modal.js";
@@ -41,16 +43,24 @@ export function AlertModal({
 }: Props) {
   const [enabled, setEnabled] = useState(alert?.enabled ?? true);
   const [direction, setDirection] = useState<Direction>(alert?.direction ?? "down");
-  const [target, setTarget] = useState(alert ? String(alert.targetPrice) : "");
+  const [target, setTarget] = useState(alert && alert.targetPrice > 0 ? String(alert.targetPrice) : "");
   const [error, setError] = useState<string | null>(null);
 
+  const withTarget = usesTarget(direction);
+
   const save = (): void => {
-    const value = Number(target.replace(/\D/g, ""));
-    if (!Number.isFinite(value) || value <= 0) {
-      setError("Informe um valor maior que zero.");
-      return;
+    // Sem `targetPrice` no patch do modo sem alvo: o alvo de antes fica guardado para quem
+    // voltar a um alerta de preço.
+    const patch: Partial<Alert> = { enabled, direction };
+    if (withTarget) {
+      const value = Number(target.replace(/\D/g, ""));
+      if (!Number.isFinite(value) || value <= 0) {
+        setError("Informe um valor maior que zero.");
+        return;
+      }
+      patch.targetPrice = value;
     }
-    onSave({ enabled, direction, targetPrice: value });
+    onSave(patch);
     onClose();
   };
 
@@ -86,29 +96,47 @@ export function AlertModal({
           />
           Quando o menor preço <strong>subir</strong> para este valor ou mais
         </label>
+        <label className="toggle">
+          <input
+            type="radio"
+            name="direction"
+            checked={direction === "available"}
+            onChange={() => setDirection("available")}
+          />
+          Quando aparecer <strong>à venda</strong>, a qualquer preço
+        </label>
       </fieldset>
 
-      <label className="toggle">
-        Preço alvo
-        <input
-          type="text"
-          inputMode="numeric"
-          placeholder="Ex.: 1200000"
-          value={target}
-          onChange={(e) => {
-            setTarget(e.target.value);
-            setError(null);
-          }}
-          onKeyDown={(e) => e.key === "Enter" && save()}
-        />
-      </label>
-
-      {error && <p className="error">{error}</p>}
+      {withTarget && (
+        <>
+          <label className="toggle">
+            Preço alvo
+            <input
+              type="text"
+              inputMode="numeric"
+              placeholder="Ex.: 1200000"
+              value={target}
+              onChange={(e) => {
+                setTarget(e.target.value);
+                setError(null);
+              }}
+              onKeyDown={(e) => e.key === "Enter" && save()}
+            />
+          </label>
+          {/* Dentro do bloco: o único erro possível é o do alvo, e trocar para o modo sem
+              alvo o esconde junto com o campo. */}
+          {error && <p className="error">{error}</p>}
+        </>
+      )}
 
       <p className="footer-note">
-        Para não encher o celular, o aviso não se repete no mesmo preço: só sai de novo se o preço
-        andar mais na direção escolhida. Ele rearma sozinho quando o preço volta para o outro lado
-        do alvo — e mudar o alvo rearma na hora.
+        {!withTarget
+          ? "Avisa uma vez quando alguma loja puser o item à venda — se já estiver à venda, " +
+            "no próximo ciclo. Não reavisa enquanto houver loja vendendo: rearma sozinho " +
+            "quando o item some de todas as lojas."
+          : "Para não encher o celular, o aviso não se repete no mesmo preço: só sai de novo se " +
+            "o preço andar mais na direção escolhida. Ele rearma sozinho quando o preço volta " +
+            "para o outro lado do alvo — e mudar o alvo rearma na hora."}
       </p>
 
       <div className="modal-actions">

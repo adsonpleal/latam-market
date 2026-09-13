@@ -80,6 +80,19 @@ describe("parseAlerts", () => {
     });
   });
 
+  it("o aviso de 'à venda' dispensa alvo, e guarda o antigo quando há", () => {
+    const r = parseAlerts(
+      JSON.stringify({
+        "FREYA:501": { ...bom, direction: "available", targetPrice: 0 },
+        "FREYA:502": { ...bom, direction: "available", targetPrice: undefined },
+        "FREYA:503": { ...bom, direction: "available" },
+      }),
+    )!;
+    expect(r["FREYA:501"]).toEqual({ ...bom, direction: "available", targetPrice: 0 });
+    expect(r["FREYA:502"]!.targetPrice).toBe(0);
+    expect(r["FREYA:503"]!.targetPrice).toBe(1000);
+  });
+
   it("direção desconhecida vira 'down'", () => {
     const r = parseAlerts(JSON.stringify({ "FREYA:501": { ...bom, direction: "lateral" } }))!;
     expect(r["FREYA:501"]!.direction).toBe("down");

@@ -29,6 +29,19 @@ const armed = (over: Partial<Alert> = {}): Alert => ({
   ...over,
 });
 
+/** Aplica cada decisão ao alerta, como o laço faz, e devolve se avisou naquele passo. */
+const stepper = (initial: Alert) => {
+  let alert = initial;
+  return (price: number | null): boolean => {
+    const { fire, patch } = evaluateAlert(alert, price);
+    if (patch) alert = { ...alert, ...patch };
+    return fire;
+  };
+};
+
+/** `tradingAt` de um servidor com coleta carregada. */
+const COLETADO = 1_700_000_000;
+
 describe("evaluateAlert — queda (quero comprar)", () => {
   it("dispara quando o preço encosta no alvo", () => {
     expect(evaluateAlert(armed(), 1000)).toEqual({ fire: true, patch: { lastAlertedPrice: 1000 } });
@@ -71,17 +84,11 @@ describe("evaluateAlert — queda (quero comprar)", () => {
   });
 
   it("o ciclo completo: avisa, cala, rearma, avisa de novo no mesmo preço", () => {
-    let alert = armed();
-    const passo = (price: number) => {
-      const { fire, patch } = evaluateAlert(alert, price);
-      if (patch) alert = { ...alert, ...patch };
-      return fire;
-    };
+    const passo = stepper(armed());
 
     expect(passo(900)).toBe(true); // primeiro aviso
     expect(passo(900)).toBe(false); // mesmo preço, silêncio
     expect(passo(1500)).toBe(false); // subiu: rearma
-    expect(alert.lastAlertedPrice).toBeNull();
     expect(passo(900)).toBe(true); // caiu de novo, avisa de novo
   });
 });
@@ -127,6 +134,60 @@ describe("evaluateAlert — alta (quero vender)", () => {
       fire: false,
       patch: { lastAlertedPrice: null },
     });
+  });
+});
+
+describe("evaluateAlert — à venda (quero a qualquer preço)", () => {
+  const available = (over: Partial<Alert> = {}) =>
+    armed({ direction: "available", targetPrice: 0, ...over });
+
+  it("dispara quando aparece à venda, ignorando o alvo", () => {
+    expect(evaluateAlert(available(), 50_000_000)).toEqual({
+      fire: true,
+      patch: { lastAlertedPrice: 50_000_000 },
+    });
+    expect(evaluateAlert(available({ targetPrice: 10 }), 1000).fire).toBe(true);
+  });
+
+  it("não reavisa enquanto segue à venda, nem se o preço cair", () => {
+    expect(evaluateAlert(available({ lastAlertedPrice: 1000 }), 1000)).toEqual({
+      fire: false,
+      patch: null,
+    });
+    expect(evaluateAlert(available({ lastAlertedPrice: 1000 }), 500)).toEqual({
+      fire: false,
+      patch: null,
+    });
+  });
+
+  it("sumir de todas as lojas rearma", () => {
+    expect(evaluateAlert(available({ lastAlertedPrice: 1000 }), null)).toEqual({
+      fire: false,
+      patch: { lastAlertedPrice: null },
+    });
+    expect(evaluateAlert(available(), null)).toEqual({ fire: false, patch: null });
+  });
+
+  it("o ciclo completo: avisa, cala, some, avisa de novo quando volta", () => {
+    const passo = stepper(available());
+
+    expect(passo(null)).toBe(false);
+    expect(passo(1000)).toBe(true);
+    expect(passo(800)).toBe(false);
+    expect(passo(null)).toBe(false);
+    expect(passo(2000)).toBe(true);
+  });
+
+  it("o aviso diz que está à venda, sem falar de alvo", () => {
+    const alerts = { "FREYA:501": available() };
+    const [aviso] = planAlerts("FREYA", alerts, new Set([501]), [priceOf(501, 900, "Poção")], COLETADO)
+      .notifications;
+    expect(aviso?.title).toBe("À venda: Poção");
+    expect(aviso?.body).not.toContain("alvo");
+  });
+
+  it("não tem distância até alvo", () => {
+    expect(gapToTarget(available({ targetPrice: 900 }), 1000)).toBeNull();
   });
 });
 
@@ -208,18 +269,18 @@ describe("planAlerts", () => {
   const favorites = new Set([501, 502]);
 
   it("favorito sem alerta é ignorado", () => {
-    const plan = planAlerts("FREYA", {}, favorites, [priceOf(501, 10)]);
+    const plan = planAlerts("FREYA", {}, favorites, [priceOf(501, 10)], COLETADO);
     expect(plan).toEqual({ patches: [], notifications: [] });
   });
 
   it("alerta desligado é ignorado", () => {
     const alerts = { "FREYA:501": armed({ enabled: false }) };
-    expect(planAlerts("FREYA", alerts, favorites, [priceOf(501, 10)]).notifications).toEqual([]);
+    expect(planAlerts("FREYA", alerts, favorites, [priceOf(501, 10)], COLETADO).notifications).toEqual([]);
   });
 
   it("item desfavoritado é ignorado, mas o alerta continua existindo", () => {
     const alerts = { "FREYA:501": armed() };
-    const plan = planAlerts("FREYA", alerts, new Set<number>(), [priceOf(501, 10)]);
+    const plan = planAlerts("FREYA", alerts, new Set<number>(), [priceOf(501, 10)], COLETADO);
     expect(plan.notifications).toEqual([]);
     expect(plan.patches).toEqual([]);
     expect(alerts["FREYA:501"]).toBeDefined();
@@ -228,13 +289,23 @@ describe("planAlerts", () => {
   /** A prova da decisão de escopo: um alvo de FREYA não pode ser julgado em NIDHOGG. */
   it("alerta de outro servidor não vaza para o servidor ativo", () => {
     const alerts = { "FREYA:501": armed({ targetPrice: 1_000_000 }) };
-    expect(planAlerts("NIDHOGG", alerts, favorites, [priceOf(501, 10)]).notifications).toEqual([]);
-    expect(planAlerts("FREYA", alerts, favorites, [priceOf(501, 10)]).notifications).toHaveLength(1);
+    expect(planAlerts("NIDHOGG", alerts, favorites, [priceOf(501, 10)], COLETADO).notifications).toEqual([]);
+    expect(planAlerts("FREYA", alerts, favorites, [priceOf(501, 10)], COLETADO).notifications).toHaveLength(1);
+  });
+
+  /** Servidor recém-subido: todo item vem sem oferta, e isso não é "sumiu das lojas". */
+  it("sem coleta carregada não decide nada, nem o rearme do aviso de 'à venda'", () => {
+    const alerts = {
+      "FREYA:501": armed({ direction: "available", lastAlertedPrice: 900 }),
+      "FREYA:502": armed(),
+    };
+    expect(planAlerts("FREYA", alerts, favorites, [priceOf(501, null), priceOf(502, 10)], null))
+      .toEqual({ patches: [], notifications: [] });
   });
 
   it("item sem oferta nenhuma não gera patch nem aviso", () => {
     const alerts = { "FREYA:501": armed() };
-    expect(planAlerts("FREYA", alerts, favorites, [priceOf(501, null)])).toEqual({
+    expect(planAlerts("FREYA", alerts, favorites, [priceOf(501, null)], COLETADO)).toEqual({
       patches: [],
       notifications: [],
     });
@@ -242,7 +313,7 @@ describe("planAlerts", () => {
 
   it("dois itens disparando geram dois avisos e dois patches", () => {
     const alerts = { "FREYA:501": armed(), "FREYA:502": armed() };
-    const plan = planAlerts("FREYA", alerts, favorites, [priceOf(501, 10), priceOf(502, 20)]);
+    const plan = planAlerts("FREYA", alerts, favorites, [priceOf(501, 10), priceOf(502, 20)], COLETADO);
     expect(plan.notifications).toHaveLength(2);
     expect(plan.patches).toHaveLength(2);
   });
@@ -252,7 +323,7 @@ describe("planAlerts", () => {
     const [queda, alta] = planAlerts("FREYA", alerts, favorites, [
       priceOf(501, 900, "Poção"),
       priceOf(502, 20, "Elixir"),
-    ]).notifications;
+    ], COLETADO).notifications;
 
     expect(queda?.title).toBe("Preço baixou: Poção");
     expect(queda?.click).toBe("market-501");
@@ -312,7 +383,7 @@ describe("coalesce", () => {
   it("acima do limite vira um resumo só", () => {
     const out = coalesce(Array.from({ length: 12 }, (_, i) => notif(i)));
     expect(out).toHaveLength(1);
-    expect(out[0]!.title).toBe("12 itens bateram o alvo");
+    expect(out[0]!.title).toBe("12 alertas dispararam");
     expect(out[0]!.body).toContain("Item 0, Item 1, Item 2");
     expect(out[0]!.body).toContain("e mais 9 itens");
     // Sem `click`: o resumo não é de um item só, então não há para onde levar.

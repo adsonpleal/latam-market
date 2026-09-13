@@ -47,13 +47,21 @@ export function tabId(): string {
   }
 }
 
-/** `down` = quero comprar, avisa quando cair. `up` = quero vender, avisa quando subir. */
-export type Direction = "down" | "up";
+/**
+ * `down` = quero comprar, avisa quando cair. `up` = quero vender, avisa quando subir.
+ * `available` = quero o item a qualquer preço, avisa quando alguém puser à venda.
+ */
+export type Direction = "down" | "up" | "available";
 
 export interface Alert {
   enabled: boolean;
   direction: Direction;
-  /** Em zeny. Sempre > 0. */
+  /**
+   * Em zeny. Sempre > 0 em `down` e `up`.
+   *
+   * Em `available` não é lido, e pode ser 0 (alerta criado já nesse modo) ou o alvo de
+   * antes — guardado para quem volta a um alerta de preço não ter de redigitá-lo.
+   */
   targetPrice: number;
   /**
    * Último preço que já gerou aviso, ou `null` quando o alerta está armado.
@@ -142,13 +150,14 @@ export function parseAlerts(raw: string | null): Alerts | null {
     if (parseAlertKey(key) === null || !isRecord(value)) continue;
 
     const { enabled, direction, targetPrice, lastAlertedPrice } = value;
-    if (typeof targetPrice !== "number" || !Number.isFinite(targetPrice) || targetPrice <= 0) {
-      continue;
-    }
+    const validTarget =
+      typeof targetPrice === "number" && Number.isFinite(targetPrice) && targetPrice > 0;
+    // Só o aviso de "à venda" dispensa alvo; nos de preço, sem alvo não há o que comparar.
+    if (!validTarget && direction !== "available") continue;
     out[key] = {
       enabled: enabled === true,
-      direction: direction === "up" ? "up" : "down",
-      targetPrice: Math.round(targetPrice),
+      direction: direction === "up" || direction === "available" ? direction : "down",
+      targetPrice: validTarget ? Math.round(targetPrice) : 0,
       lastAlertedPrice:
         typeof lastAlertedPrice === "number" && Number.isFinite(lastAlertedPrice)
           ? lastAlertedPrice

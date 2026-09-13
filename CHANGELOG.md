@@ -3,6 +3,17 @@
 Mais recente primeiro. A seção do topo é a fonte do post de novidades no Discord
 (`tools/post-novidades.mjs`), então escreva pensando em quem vai ler lá.
 
+## 0.13.0 — 2026-09-13
+
+- **O alerta dos Favoritos agora avisa quando o item aparece à venda, a qualquer preço.** É
+  para aquele item raro que ninguém vende e que você compra pelo preço que vier: em vez de
+  inventar um alvo, escolha "Quando aparecer à venda" no alerta e o campo de preço some. O
+  aviso sai uma vez, assim que alguma loja anunciar o item, com o menor preço do momento.
+  Se o item já estiver à venda quando você ligar o alerta, ele avisa na próxima checagem. E
+  para não encher o celular, não reavisa enquanto houver loja vendendo, nem se o preço cair.
+  Só volta a avisar depois que o item some de todas as lojas e aparece de novo. Para saber
+  de queda de preço, os alertas de "cair" e "subir" continuam lá.
+
 ## 0.12.1 — 2026-09-01
 
 - **A busca já conhece os itens da atualização nova do cliente.** São 104 nomes que ela
