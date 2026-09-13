@@ -75,8 +75,10 @@ export interface CrawlOutcome {
   server: Server;
   snapshotId: number | null;
   rows: number;
-  /** Linhas absorvidas pelo agrupamento na ingestão. */
-  grouped: number;
+  /** Mesma vaga vista de novo na coleta. Deveria ser zero; acima disso é o coletor. */
+  repetidas: number;
+  /** Vagas distintas fundidas numa oferta só. Rotina. */
+  agrupadas: number;
   failures: number;
   durationMs: number;
   error?: string;
@@ -100,7 +102,8 @@ export async function runCrawl(
     server,
     snapshotId: null,
     rows: 0,
-    grouped: 0,
+    repetidas: 0,
+    agrupadas: 0,
     failures: 0,
     durationMs: Date.now() - started,
     error,
@@ -161,7 +164,8 @@ export async function runCrawl(
       server,
       snapshotId: shipped.snapshotId,
       rows: shipped.rows,
-      grouped: shipped.grouped ?? 0,
+      repetidas: shipped.repetidas ?? 0,
+      agrupadas: shipped.agrupadas ?? 0,
       failures: report.failures,
       durationMs: Date.now() - started,
     };

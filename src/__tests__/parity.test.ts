@@ -157,10 +157,11 @@ beforeAll(async () => {
     server: "NIDHOGG",
     startedAt: 1_700_000_200,
     crawlId: "seed-trading-nidhogg",
-    // As duas lojas, mais as três vagas extras da primeira. Depois de agrupado o retrato
-    // tem os mesmos DOIS anúncios de sempre, que é justamente o ponto: os outros testes
-    // deste arquivo não enxergam diferença.
-    rows: [...anuncios, ...mesmaLoja],
+    // As duas lojas, mais as três vagas extras da primeira — e a PRIMEIRA vaga repetida,
+    // como chega quando o nome do item casa com mais de um termo da varredura. Depois de
+    // agrupado o retrato tem os mesmos DOIS anúncios de sempre, que é justamente o ponto:
+    // os outros testes deste arquivo não enxergam diferença.
+    rows: [...anuncios, ...mesmaLoja, anuncios[0]!],
   });
 });
 
@@ -706,9 +707,9 @@ describe("preços em lote", () => {
    * repetição também contava como mais um anúncio e puxava os percentis.
    */
   it("três vagas da mesma loja viram um anúncio só, somando as peças", async () => {
-    // Cinco linhas no lote: duas lojas, e mais três vagas da PRIMEIRA delas.
-    expect(nidhoggIngest["rows"]).toBe(5);
-    expect(nidhoggIngest["grouped"]).toBe(3);
+    // Os dois números são publicados separados porque só o primeiro é alarme.
+    expect(nidhoggIngest["repetidas"]).toBe(1);
+    expect(nidhoggIngest["agrupadas"]).toBe(3);
 
     // O que a interface lê: dois anúncios, não cinco. Era isto que aparecia repetido na
     // tela — a mesma loja, o mesmo vendedor, o mesmo preço, três linhas seguidas num
@@ -717,7 +718,8 @@ describe("preços em lote", () => {
       offers: Array<{ price: number; qty: number; store: string }>;
     };
     expect(r.offers.map((o) => o.price)).toEqual([900, 950]);
-    // A quantidade não se perde ao juntar: as quatro vagas da Loja 0 somam 40 peças.
+    // A quantidade não se perde ao juntar: as quatro vagas da Loja 0 somam 40 peças. E a
+    // vaga REPETIDA não soma de novo.
     expect(r.offers[0]).toMatchObject({ price: 900, qty: 40, store: "Loja 0" });
   });
 

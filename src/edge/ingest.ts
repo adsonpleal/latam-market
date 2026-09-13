@@ -210,8 +210,10 @@ export async function handleIngest(request: Request, env: Env): Promise<Response
   for (const itemId of distinct.keys()) inMarket.add(itemId);
 
   let blob: SnapshotBlob;
-  /** Quantas linhas o agrupamento absorveu. Publicado na resposta — ver o `return`. */
-  let grouped = 0;
+  /** Linhas que eram a MESMA vaga (ou o mesmo item, no market-price) vista de novo. */
+  let repetidas = 0;
+  /** Vagas distintas fundidas numa oferta só. Só existe no `trading`. */
+  let agrupadas = 0;
   if (header.dataset === "trading") {
     // Um anúncio é UMA LOJA OFERECENDO A UM PREÇO — não uma vaga de loja.
     //
@@ -231,12 +233,23 @@ export async function handleIngest(request: Request, env: Env): Promise<Response
     // versão com e sem slot ao mesmo preço são duas ofertas diferentes, e juntá-las
     // esconderia uma delas.
     //
-    // Isto também absorve a repetição da MESMA vaga, que a migração deixou passar: a
-    // tabela `listing` do SQLite era `PRIMARY KEY (snapshot_id, ssi)` com `INSERT OR
-    // REPLACE` e o banco a engolia sozinho; o blob no R2 não tem chave nenhuma. Acontece
-    // quando as páginas de uma coleta demoram e o mercado se mexe entre elas.
+    // Mas o agrupamento NÃO pode ver a mesma vaga duas vezes: a soma das peças contaria a
+    // mesma vaga a cada repetição, e um equipamento — que não empilha — apareceria com 5
+    // peças onde há 1. Foi o que aconteceu ao trocar a deduplicação por `ssi` pelo
+    // agrupamento. E a repetição não é caso raro: o coletor varre o mercado por SUBSTRINGS
+    // do nome (ver `crawl/terms.ts` no coletor), então um item cujo nome casa com cinco
+    // termos chega cinco vezes, e a mesma vaga ainda reaparece na página seguinte quando o
+    // mercado se mexe entre uma página e outra. No SQLite isso morria na
+    // `PRIMARY KEY (snapshot_id, ssi)` com `INSERT OR REPLACE`; o blob no R2 não tem chave.
+    //
+    // O `ssi` identifica a VAGA, não a observação: a mesma vaga pode voltar com outro
+    // `itemCnt` se a loja vendeu entre uma varredura e outra. Última ocorrência vence,
+    // como o `INSERT OR REPLACE` fazia.
+    const porVaga = new Map<string, TradingRow>();
+    for (const row of rows as TradingRow[]) porVaga.set(row.ssi, row);
+    repetidas = rows.length - porVaga.size;
     const porOferta = new Map<string, ListingRow>();
-    for (const row of rows as TradingRow[]) {
+    for (const row of porVaga.values()) {
       // O site manda `""` quando o item não tem slot, e isso é NULL, não string vazia.
       const slotMax = row.slotMaxCount || null;
       // ⚠ `itemId` PRIMEIRO na chave: este laço percorre a coleta INTEIRA, com todos os
@@ -268,7 +281,7 @@ export async function handleIngest(request: Request, env: Env): Promise<Response
       });
     }
     const listings: ListingRow[] = [...porOferta.values()];
-    grouped = rows.length - listings.length;
+    agrupadas = porVaga.size - listings.length;
     statements.push(
       ...insertStats(header.server, header.startedAt, rollupStats(groupByItem(listings))),
     );
@@ -299,7 +312,7 @@ export async function handleIngest(request: Request, env: Env): Promise<Response
       });
     }
     const points: PricePoint[] = [...byItem.values()];
-    grouped = rows.length - points.length;
+    repetidas = rows.length - points.length;
     statements.push(...upsertPricePoints(header.server, snapshot.id, header.startedAt, points));
     blob = toBlob({
       server: header.server,
@@ -329,10 +342,14 @@ export async function handleIngest(request: Request, env: Env): Promise<Response
     snapshotId: snapshot.id,
     duplicate: false,
     rows: rows.length,
-    // Quantas linhas o agrupamento absorveu. Vai na resposta E é registrada pelo shipper no
-    // journal: sem um número visível a repetição some sem rastro, que foi exatamente como
-    // ela chegou à interface sem ninguém perceber.
-    grouped,
+    // Dois números, porque só um deles é alarme. `repetidas` é a mesma vaga vista de novo:
+    // vem da varredura por substrings do coletor e deveria ser zero se ele deduplicasse
+    // antes de enviar. `agrupadas` é forma do mercado — um vendedor com três cópias em
+    // três vagas — e é rotina. Somados num campo só, o alarme some no ruído, que foi
+    // exatamente como a repetição chegou à interface sem ninguém perceber. Vão na resposta
+    // E são registrados pelo shipper no journal.
+    repetidas,
+    agrupadas,
     itens: distinct.size,
   });
 }

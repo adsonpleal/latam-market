@@ -41,8 +41,10 @@ export interface ShipResult {
   snapshotId: number;
   duplicate: boolean;
   rows: number;
-  /** Linhas que o agrupamento por (item, loja, preço) absorveu. Ver `edge/ingest.ts`. */
-  grouped?: number;
+  /** Linhas que eram a mesma vaga vista de novo. Ver `edge/ingest.ts`. */
+  repetidas?: number;
+  /** Vagas distintas fundidas numa oferta só por (item, loja, preço). */
+  agrupadas?: number;
 }
 
 export interface ShipTarget {
