@@ -1,0 +1,11 @@
+[Unit]
+Description=latam-market — cópia diária do banco
+
+[Timer]
+# Longe da faxina (03:13 UTC, src/node/maintenance.ts) para os dois não disputarem o disco.
+OnCalendar=*-*-* 05:41:00 UTC
+Persistent=true
+RandomizedDelaySec=10min
+
+[Install]
+WantedBy=timers.target

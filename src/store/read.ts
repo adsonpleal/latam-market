@@ -1,14 +1,13 @@
 /**
  * Consultas de leitura.
  *
- * Tudo que sai daqui filtra por `snapshot.ok = 1` — snapshot aberto (crawl em
- * andamento) ou abortado é invisível. Os tipos são a fronteira: `core/` só conhece
- * estas formas, nunca linhas cruas do SQLite.
+ * O que é lido do banco a cada requisição: histórico, referências e a lista de coletas.
+ * O mercado corrente não passa por aqui — está em memória (`cache.ts`). Os tipos são a
+ * fronteira: `core/` só conhece estas formas, nunca linhas cruas do SQLite.
  */
 
 import type { Db } from "./port.js";
 
-import type { Dataset } from "../core/datasets.js";
 import type { Server } from "../core/servers.js";
 
 export interface ItemRow {
@@ -66,29 +65,6 @@ export interface SnapshotRow {
   source: string;
 }
 
-/**
- * Id do snapshot fechado mais recente para um dataset.
- *
- * Exclui `source = 'live'` de propósito. A consulta ao vivo saiu na 0.6.0, então nada
- * produz essas linhas hoje — mas bancos antigos as têm, e cada uma cobria um item só. Se
- * entrasse aqui viraria "o retrato mais recente do mercado": um retrato em que todos os
- * outros 4 mil itens sumiram.
- */
-export async function latestSnapshotId(
-  db: Db,
-  dataset: Dataset,
-  server: Server,
-): Promise<number | null> {
-  const row = await db.first<{ id: number }>(
-    `SELECT id FROM snapshot
-        WHERE dataset = ? AND server = ? AND ok = 1 AND source <> 'live'
-        ORDER BY started_at DESC LIMIT 1`,
-    dataset,
-    server,
-  );
-  return row?.id ?? null;
-}
-
 export async function listSnapshots(
   db: Db,
   limit = 20,
@@ -109,23 +85,6 @@ export async function listSnapshots(
   }));
 }
 
-/**
- * O catálogo inteiro. Igual nos dois servidores, porque é do jogo.
- *
- * O `LEFT JOIN` com `item_market` que existia aqui saiu: "já apareceu no mercado" é fato
- * POR SERVIDOR e agora vive no `MarketCache`, num `Set` à parte (ver `inMarketIds`). O que
- * a separação compra é o catálogo poder ser carregado UMA vez e servir os dois servidores
- * — no Worker ele vem de um asset estático, e duplicá-lo por servidor custaria alguns MB
- * de um isolate que tem 128.
- */
-export async function allItems(db: Db): Promise<ItemRow[]> {
-  const rows = await db.all<Record<string, unknown>>(
-    `SELECT item_id, name, name_norm, img_path, db_type, slots, item_type, equip_slots
-       FROM item`,
-  );
-  return rows.map(toItem);
-}
-
 /** Ids que já apareceram no mercado DAQUELE servidor. */
 export async function inMarketIds(db: Db, server: Server): Promise<Set<number>> {
   const rows = await db.all<{ item_id: number }>(
@@ -133,21 +92,6 @@ export async function inMarketIds(db: Db, server: Server): Promise<Set<number>> 
     server,
   );
   return new Set(rows.map((r) => r.item_id));
-}
-
-function toItem(r: Record<string, unknown>): ItemRow {
-  return {
-    itemId: r["item_id"] as number,
-    name: r["name"] as string,
-    nameNorm: r["name_norm"] as string,
-    imgPath: (r["img_path"] as string | null) ?? null,
-    dbType: (r["db_type"] as string | null) ?? null,
-    slots: (r["slots"] as number | null) ?? null,
-    itemType: (r["item_type"] as string | null) ?? null,
-    equipSlots: ((r["equip_slots"] as string | null) ?? "")
-      .split(",")
-      .filter(Boolean),
-  };
 }
 
 function toPricePoint(r: Record<string, unknown>): PricePoint {
@@ -159,43 +103,6 @@ function toPricePoint(r: Record<string, unknown>): PricePoint {
     maxPrice: (r["max_price"] as number | null) ?? null,
     avgPrice: (r["avg_price"] as number | null) ?? null,
   };
-}
-
-/** Agregados do market-price no snapshot mais recente. */
-export async function latestPricePoints(
-  db: Db,
-  snapshotId: number,
-): Promise<PricePoint[]> {
-  const rows = await db.all<Record<string, unknown>>(
-    `SELECT item_id, ts, total_cnt, min_price, max_price, avg_price
-         FROM price_point WHERE snapshot_id = ?`,
-    snapshotId,
-  );
-  return rows.map(toPricePoint);
-}
-
-/** Anúncios de um snapshot, já ordenados por preço — é a ordem em que serão servidos. */
-export async function listingsOfSnapshot(
-  db: Db,
-  snapshotId: number,
-): Promise<ListingRow[]> {
-  const rows = await db.all<Record<string, unknown>>(
-    `SELECT l.ssi, l.item_id, l.price, l.cnt, l.slot_max, l.map_id, s.name, s.seller
-         FROM listing l JOIN store s ON s.id = l.store_id
-        WHERE l.snapshot_id = ?
-        ORDER BY l.item_id, l.price`,
-    snapshotId,
-  );
-  return rows.map((r) => ({
-    ssi: r["ssi"] as string,
-    itemId: r["item_id"] as number,
-    price: r["price"] as number,
-    cnt: r["cnt"] as number,
-    slotMax: (r["slot_max"] as string | null) ?? null,
-    storeName: r["name"] as string,
-    seller: r["seller"] as string,
-    mapId: (r["map_id"] as number | null) ?? null,
-  }));
 }
 
 /**
@@ -237,9 +144,18 @@ export async function listingHistory(
       ? `SELECT item_id, day AS ts, listings, units, min_price, p25, median, p75, max_price
            FROM listing_daily
           WHERE server = ? AND item_id = ? AND day >= ? AND day <= ? ORDER BY day`
-      : `SELECT item_id, ts, listings, units, min_price, p25, median, p75, max_price
+      : // Um ponto por HORA, mesmo com coletas a cada 10 minutos: quem pede `bucket=hour` quer
+        // a curva do dia, e seis pontos por hora triplicariam a resposta sem mudar a leitura.
+        // Mesma regra do diário: menor mínimo, média das medianas.
+        `SELECT item_id, (ts / 3600) * 3600 AS ts,
+                CAST(AVG(listings) AS INTEGER) AS listings, CAST(AVG(units) AS INTEGER) AS units,
+                MIN(min_price) AS min_price, CAST(AVG(p25) AS INTEGER) AS p25,
+                CAST(AVG(median) AS INTEGER) AS median, CAST(AVG(p75) AS INTEGER) AS p75,
+                MAX(max_price) AS max_price
            FROM listing_stats
-          WHERE server = ? AND item_id = ? AND ts >= ? AND ts <= ? ORDER BY ts`;
+          WHERE server = ? AND item_id = ? AND ts >= ? AND ts <= ?
+          GROUP BY item_id, ts / 3600
+          ORDER BY ts`;
   const rows = await db.all<Record<string, unknown>>(
     sql,
     server,

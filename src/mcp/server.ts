@@ -22,7 +22,7 @@ export const buildInstructions = (): string =>
     "Dados do mercado de jogadores do Ragnarok Online LATAM (servidor FREYA).",
     "",
     "Todas as ferramentas respondem instantaneamente a partir das coletas periódicas, que",
-    "costumam ter menos de uma hora — data_status mostra a idade. Não existe consulta ao",
+    "costumam ter poucos minutos — data_status mostra a idade. Não existe consulta ao",
     "vivo: para o mercado deste instante, mande a pessoa ao site oficial (o link vem em",
     "`links.market` de qualquer item).",
     "",

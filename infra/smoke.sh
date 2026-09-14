@@ -3,71 +3,67 @@
 # As respostas que precisam continuar de pé depois de QUALQUER deploy: o serviço, o MCP, a
 # API, a raiz da interface e os cabeçalhos de cache.
 #
-# Antes tudo isto dividia um bloco do Caddy, e era a ordem dos `handle` ali que garantia que
-# um arquivo estático nunca atendesse no lugar da API — nem o Node no lugar da interface. A
-# primitiva mudou de nome (`run_worker_first` no wrangler.jsonc) mas o risco é o mesmo, e
-# quebra do mesmo jeito: silenciosamente, servindo a coisa errada com 200.
+# O que casa com o quê é ordem de `if` em src/app.ts: o que é do serviço vem antes do
+# arquivo estático. Quando isso quebra, quebra calado — servindo a coisa errada com 200.
 #
-# Rode à mão contra qualquer ambiente:
+# Contra o público, ou contra o processo local passando o Host:
 #
-#   bash infra/smoke.sh https://latam-market.<subdominio>.workers.dev
+#   bash infra/smoke.sh https://mercado.latam-tools.com.br
+#   HOST_HEADER=mercado.latam-tools.com.br bash infra/smoke.sh http://127.0.0.1:8788
 set -euo pipefail
 
 BASE="${1:-https://mercado.latam-tools.com.br}"
+H=()
+[ -n "${HOST_HEADER:-}" ] && H=(-H "Host: $HOST_HEADER")
 
 echo "== $BASE =="
 
 echo -n "healthz... "
-curl -sf "$BASE/healthz" | grep -q '"ok":true'
+health=$(curl -sf "${H[@]}" "$BASE/healthz")
+grep -q '"ok":true' <<<"$health"
+# O processo Node publica memória e atraso do laço; o Worker não publicava. Se isto sumir,
+# o domínio está apontando para outra coisa.
+grep -q '"rssMb"' <<<"$health"
 echo "ok"
 
-# Um deploy pode subir e ainda não servir dado nenhum — se o catálogo não chegou como
-# asset, `catalogueItems` vem 0 e nenhuma resposta de preço presta.
+# Um deploy pode subir e ainda não servir dado nenhum — sem o catálogo, nenhuma resposta
+# de preço presta.
 echo -n "catálogo carregado... "
-curl -sf "$BASE/healthz" | grep -qv '"catalogueItems":0'
+grep -qv '"catalogueItems":0' <<<"$health"
 echo "ok"
 
-# Chamada real ao MCP: prova que o transporte e o registro de ferramentas funcionam, não só
-# que a rota existe. É o que pega uma troca de SDK que compila e não serve.
+# Chamada real ao MCP: prova que o transporte e o registro de ferramentas funcionam.
 echo -n "mcp tools/list... "
-curl -sf -X POST "$BASE/mcp" \
+curl -sf "${H[@]}" -X POST "$BASE/mcp" \
   -H 'content-type: application/json' \
   -H 'accept: application/json, text/event-stream' \
   -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' | grep -q '"get_price"'
 echo "ok"
 
-# E uma consulta REST de verdade, que exercita a hidratação do retrato.
+# `all=1`: a busca filtra por "já visto no mercado", e um banco recém-criado não viu nada.
 echo -n "api /items... "
-curl -sf "$BASE/api/v1/items?q=elixir&limit=1" | grep -q '"itemId"'
+curl -sf "${H[@]}" "$BASE/api/v1/items?q=elixir&limit=1&all=1" | grep -q '"itemId"'
 echo "ok"
 
-# O outro lado da mesma ordenação: a raiz tem de cair no asset estático, não no Worker. Um
-# 404 aqui é o roteamento invertido — foi exatamente o que aconteceu na 0.3.0, com o Caddy.
+# O outro lado da mesma ordem: a raiz cai na interface, não na API.
 echo -n "raiz serve html... "
-curl -sfI "$BASE/" | grep -qi 'content-type: text/html'
+curl -sfI "${H[@]}" "$BASE/" | grep -qi 'content-type: text/html'
 echo "ok"
 
-# Cache deixou de ser enfeite: sem cabeçalho, toda leitura atravessa até o D1 em `enam` e é
-# cobrada. Um deploy que perca isto continua correto e fica caro em silêncio.
+# Um arquivo que não existe não pode virar o HTML da SPA: a borda o guardaria como
+# imutável por um ano.
+echo -n "asset inexistente é 404... "
+code=$(curl -s -o /dev/null -w '%{http_code}' "${H[@]}" "$BASE/assets/nao-existe-$$.js")
+[ "$code" = "404" ] || { echo "FALHOU: $code"; exit 1; }
+echo "ok"
+
+# Sem cabeçalho de cache, toda leitura atravessa até a VM.
 echo -n "cache-control nas rotas de mercado... "
-curl -sfI "$BASE/api/v1/ids" | grep -qi '^cache-control: public'
+curl -sfI "${H[@]}" "$BASE/api/v1/ids" | grep -qi '^cache-control: public'
 echo "ok"
 
 echo -n "etag em /ids... "
-curl -sfI "$BASE/api/v1/ids" | grep -qi '^etag:'
+curl -sfI "${H[@]}" "$BASE/api/v1/ids" | grep -qi '^etag:'
 echo "ok"
-
-# A ingestão é a única rota que ESCREVE. Sem assinatura ela não pode responder 200 em
-# hipótese alguma — um deploy sem o secret configurado responde 503, o que também é aceito
-# aqui: o que não pode é passar.
-echo -n "ingestão recusa sem assinatura... "
-code=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$BASE/internal/ingest" -d '{}')
-case "$code" in
-  401 | 403 | 503) echo "ok ($code)" ;;
-  *)
-    echo "FALHOU: /internal/ingest respondeu $code sem assinatura"
-    exit 1
-    ;;
-esac
 
 echo "tudo de pé."

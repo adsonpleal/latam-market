@@ -58,7 +58,7 @@ describe("camadas", () => {
         // nascer com os mesmos cabeçalhos nos dois lados. O resto de `edge/` (allowlists,
         // ingestão, o próprio `worker.ts`) continua fora do alcance deles.
         if (spec === "../edge/respond.js") continue;
-        if (/^\.\.\/(store|shipper|collect|edge)\//.test(spec)) {
+        if (/^\.\.\/(store|collect|edge|ingest|node)\//.test(spec)) {
           // Exceção única: `store/port.js` é a PORTA do banco — uma interface sem
           // implementação, que some na compilação. Ela é o contrato que `core/` exige,
           // não a linha do banco que `store/` devolve, então importá-la não pode
@@ -89,11 +89,15 @@ describe("camadas", () => {
    * `node:buffer` fica de fora da proibição porque o Workers o oferece com
    * `nodejs_compat`, e o caminho do replay depende dele.
    */
-  it("core/, api/ e mcp/ não importam nada de node:", () => {
+  it("core/, api/, mcp/ e ingest/ não importam nada de node:", () => {
+    // `ingest/` entrou quando a ingestão saiu do Worker: as regras de oferta e de gravação
+    // conversam só com a porta do banco, e é isso que deixa o teste da sessão rodar sobre
+    // um SQLite em memória sem nada do processo.
     const files = [
       ...tsUnder(resolve(SRC, "core")),
       ...tsUnder(resolve(SRC, "api")),
       ...tsUnder(resolve(SRC, "mcp")),
+      ...tsUnder(resolve(SRC, "ingest")).filter((f) => !f.includes("__tests__")),
     ];
     const violations: string[] = [];
     for (const file of files) {

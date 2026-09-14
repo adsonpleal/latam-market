@@ -1,15 +1,13 @@
 /**
  * Como uma resposta sai daqui: JSON, CORS e cache.
  *
- * O cache é a parte nova e a mais importante. Na EC2 a API não mandava cabeçalho de cache
- * nenhum — só os assets tinham, pelo Caddy. Isso era desperdício lá e seria caro aqui: o
- * D1 mais próximo fica em `enam`, a uns 120 ms de um usuário brasileiro, e um acerto de
- * cache é servido do POP de São Paulo SEM executar o Worker (a Cloudflare devolve a
- * resposta cacheada sem invocar o script). Ou seja, cabeçalho de cache não é só latência:
- * é requisição, CPU e linha lida que não são cobradas.
+ * O serviço roda numa VM pequena atrás do túnel da Cloudflare, e a borda é o que segura o
+ * tráfego: um acerto de cache é servido do POP sem chegar à máquina. Cabeçalho de cache aqui
+ * não é só latência — é CPU de uma máquina de um núcleo que não é gasta.
  *
  * `Cloudflare-CDN-Cache-Control` separa o TTL da borda do que o navegador vê — a
- * Cloudflare o consome e não o repassa, então o cliente só enxerga `Cache-Control`.
+ * Cloudflare o consome e não o repassa, então o cliente só enxerga `Cache-Control`. Ele só
+ * vale para caminhos que uma Cache Rule marca como cacheáveis (ver `infra/CUTOVER.md`).
  */
 
 import { config } from "../config.js";
@@ -28,12 +26,12 @@ export interface CachePolicy {
 /**
  * Teto do TTL de borda para qualquer rota cujo corpo carregue `freshness`.
  *
- * O `tradingAgeMin` é calculado na hora de montar a resposta e vai ASSADO no corpo. Uma
- * resposta cacheada em T e servida em T+280s subestima a idade em 280s. Com 300s de teto o
- * erro fica limitado a cinco minutos, e o cabeçalho `Age` que a Cloudflare acrescenta nos
- * acertos permite ao cliente corrigir: idade real = `tradingAgeMin*60 + Age`.
+ * Um minuto. A publicação é por item, conforme a coleta anda, então o mercado muda o tempo
+ * todo — e a coleta é a cada 10 minutos. Cinco minutos de borda (o que valia com uma coleta
+ * inteira a cada meia hora) esconderia metade de cada ciclo. O `tradingAgeMin` vai assado no
+ * corpo; o cabeçalho `Age` dos acertos corrige: idade real = `tradingAgeMin*60 + Age`.
  */
-export const FRESHNESS_EDGE_MAX = 300;
+export const FRESHNESS_EDGE_MAX = 60;
 
 export const NO_STORE: CachePolicy = { browser: 0, edge: 0 };
 
@@ -48,19 +46,23 @@ export const NO_STORE: CachePolicy = { browser: 0, edge: 0 };
 export const CACHE = {
   /** Retrato do mercado: preço, oferta, busca, avaliação. Carrega `freshness`. */
   market: {
-    browser: 60,
+    browser: 30,
     edge: FRESHNESS_EDGE_MAX,
-    swr: 600,
+    swr: 300,
     staleIfError: 86_400,
   },
   /** Histórico por dia: só muda quando o rollup diário fecha. */
   historyDaily: { browser: 900, edge: 3_600, swr: 7_200, staleIfError: 86_400 },
   /** Histórico por hora: acompanha a coleta. */
-  historyHourly: { browser: 60, edge: FRESHNESS_EDGE_MAX, swr: 600, staleIfError: 86_400 },
-  /** Agregados caros sobre `listing_daily`. Mudam devagar, custam caro. */
-  aggregate: { browser: 300, edge: FRESHNESS_EDGE_MAX, swr: 1_800, staleIfError: 86_400 },
+  historyHourly: { browser: 30, edge: FRESHNESS_EDGE_MAX, swr: 300, staleIfError: 86_400 },
+  /**
+   * Agregados sobre `listing_daily` (movers, pechinchas). O memo deles é por hora, e a parte
+   * das pechinchas que compara com as ofertas de agora é barata — então a borda pode segurar
+   * mais que o mercado, sem passar de alguns minutos.
+   */
+  aggregate: { browser: 300, edge: 300, swr: 1_800, staleIfError: 86_400 },
   /** Saúde da coleta: é a rota que responde "o dado está fresco?" — cachear muito mente. */
-  status: { browser: 30, edge: 30 },
+  status: { browser: 15, edge: 15 },
   /** Taxonomia: muda em deploy, não em coleta. */
   taxonomy: { browser: 3_600, edge: 86_400 },
 } satisfies Record<string, CachePolicy>;

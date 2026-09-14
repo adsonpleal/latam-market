@@ -1,33 +1,42 @@
 /**
  * Adaptador de `node:sqlite` para a porta `Db`.
  *
- * Serve dois usuários que continuam em Node depois da migração: o shipper, que roda no
- * EC2 ao lado do coletor, e os testes de unidade de `core/`, que não precisam subir um
- * Worker para conferir uma consulta de histórico.
+ * É o banco de produção: o serviço inteiro roda num processo Node na VM, com o SQLite no
+ * disco ao lado. As promessas já vêm resolvidas — o SQLite embutido é síncrono e não há o
+ * que aguardar; o `async` está aqui só para `core/` ter uma assinatura só.
  *
- * As promessas já vêm resolvidas: o SQLite embutido é síncrono e não há o que aguardar.
- * O `async` está aqui só para a assinatura bater com a do D1.
+ * **Statements preparados ficam guardados**, um por texto de SQL. Preparar custa análise e
+ * planejamento a cada chamada, e a ingestão repete as MESMAS dez consultas milhares de
+ * vezes por coleta: sem o cache, só o preparo de um lote de ofertas segurava o laço de
+ * eventos da API por mais de 100 ms.
  */
 
-import type { DatabaseSync } from "node:sqlite";
+import type { DatabaseSync, StatementSync } from "node:sqlite";
 
 import type { Db, SqlParam, SqlStatement, WritableDb } from "./port.js";
 import { transact } from "./db.js";
 
 export function sqliteDb(db: DatabaseSync): WritableDb {
+  const statements = new Map<string, StatementSync>();
+  const prepared = (sql: string): StatementSync => {
+    let stmt = statements.get(sql);
+    if (!stmt) statements.set(sql, (stmt = db.prepare(sql)));
+    return stmt;
+  };
+
   return {
     async all<T>(sql: string, ...params: SqlParam[]): Promise<T[]> {
-      return db.prepare(sql).all(...(params as never[])) as T[];
+      return prepared(sql).all(...(params as never[])) as T[];
     },
     async first<T>(sql: string, ...params: SqlParam[]): Promise<T | null> {
-      return (db.prepare(sql).get(...(params as never[])) as T | undefined) ?? null;
+      return (prepared(sql).get(...(params as never[])) as T | undefined) ?? null;
     },
     async run(sql: string, ...params: SqlParam[]): Promise<number> {
-      return Number(db.prepare(sql).run(...(params as never[])).changes);
+      return Number(prepared(sql).run(...(params as never[])).changes);
     },
-    async batch(statements: readonly SqlStatement[]): Promise<void> {
+    async batch(list: readonly SqlStatement[]): Promise<void> {
       transact(db, () => {
-        for (const s of statements) db.prepare(s.sql).run(...((s.params ?? []) as never[]));
+        for (const s of list) prepared(s.sql).run(...((s.params ?? []) as never[]));
       });
     },
   } satisfies Db & WritableDb;

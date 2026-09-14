@@ -1,89 +1,141 @@
 /**
- * O andaime da suíte de paridade, agora dentro do `workerd`.
+ * O andaime da suíte de paridade: o serviço inteiro, em processo.
  *
- * Antes isto subia um `createHttpServer` do Node em porta zero e falava com ele por
- * `fetch`. Provava o comportamento de um servidor que não existe mais em produção. Agora
- * `SELF.fetch` entra pelo MESMO `worker.ts` que é publicado, com D1 e R2 locais de verdade.
+ * `SELF.fetch` entra pelo MESMO `createApp` que o servidor publica, com um SQLite em memória
+ * migrado pelos MESMOS arquivos de `migrations/` e o catálogo real gerado no `pretest`.
+ * Sem porta aberta: o adaptador HTTP tem teste próprio (`node/__tests__/http.test.ts`), e
+ * aqui o que se prova é o comportamento das rotas.
  *
- * A semeadura mudou junto, e para melhor: em vez de escrever direto no SQLite com
- * `beginSnapshot`/`writeRows`/`rollupListings`, cada cenário entra pela rota real de
- * ingestão. Com isso, montar o mundo do teste passa a exercitar as quatro peças mais
- * novas e menos provadas da migração — a assinatura HMAC, o rollup de percentis em JS, o
- * codificador do blob e a virada do ponteiro no R2 — em vez de contorná-las.
+ * A semeadura entra pela ingestão de verdade — a mesma sessão que a coleta usa, item a item.
+ * Uma coleta semeada aqui é uma coleta LIMPA: todo item que não veio nela sai do "à venda",
+ * que é o que o coletor faz no fim de uma varredura completa.
  */
 
-import { env, SELF } from "cloudflare:test";
-import { inject } from "vitest";
+import { readFileSync } from "node:fs";
+import { join, resolve } from "node:path";
 
+import { createApp } from "../app.js";
+import type { ItemBatch } from "../collect/port.js";
+import { applyEnv } from "../config.js";
 import type { Dataset } from "../core/datasets.js";
-import type { Server } from "../core/servers.js";
+import { SERVERS, type Server } from "../core/servers.js";
+import { CATALOGUE_URL } from "../generated/catalogue.js";
+import { openCrawlSession } from "../ingest/session.js";
+import { getCache, resetCaches, setCache } from "../store/cache.js";
+import { catalogueFromAsset, type CatalogueAsset } from "../store/catalogue.js";
+import { openDb } from "../store/db.js";
+import type { WritableDb } from "../store/port.js";
 import type { Row } from "../store/rows.js";
-import { resetHydration } from "../store/hydrate.js";
+import { sqliteDb } from "../store/sqlite.js";
 
-/** Tem que bater com o binding declarado em `vitest.config.ts`. */
-const INGEST_SECRET = "segredo-de-teste";
+const REPO = resolve(import.meta.dirname, "..", "..");
 
 /** O host precisa estar na allowlist — é a mesma defesa contra DNS rebinding de produção. */
 export const ORIGIN = "https://mercado.latam-tools.com.br";
 
-const hex = (buf: ArrayBuffer): string =>
-  [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, "0")).join("");
+let db: WritableDb | null = null;
+let app: ((request: Request) => Promise<Response>) | null = null;
 
-async function sign(payload: string): Promise<string> {
-  const key = await crypto.subtle.importKey(
-    "raw",
-    new TextEncoder().encode(INGEST_SECRET),
-    { name: "HMAC", hash: "SHA-256" },
-    false,
-    ["sign"],
-  );
-  return hex(await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(payload)));
+/** Um mundo novo: banco vazio migrado, catálogo real, mercado vazio. */
+export async function applyMigrations(): Promise<void> {
+  applyEnv({});
+  db = sqliteDb(openDb({ path: ":memory:", migrationsDir: join(REPO, "migrations") }));
+  const asset = JSON.parse(
+    readFileSync(join(REPO, "web", "dist", CATALOGUE_URL), "utf8"),
+  ) as CatalogueAsset;
+  const catalogue = catalogueFromAsset(asset);
+  resetCaches();
+  for (const server of SERVERS) {
+    setCache(server, {
+      tradingSnapshotId: null,
+      tradingAt: null,
+      marketSnapshotId: null,
+      marketAt: null,
+      items: catalogue.items,
+      byNameNorm: catalogue.byNameNorm,
+      inMarket: new Set(),
+      prices: new Map(),
+      listings: new Map(),
+    });
+  }
+  app = createApp({
+    db,
+    staticFiles: async () => new Response("interface fora do teste", { status: 404 }),
+    health: () => ({ catalogueItems: getCache("FREYA").items.size }),
+  });
 }
+
+/** O `fetch` do serviço, com HEAD sem corpo como o adaptador HTTP entrega. */
+export const SELF = {
+  async fetch(url: string, init?: RequestInit): Promise<Response> {
+    if (!app) throw new Error("applyMigrations() antes de usar o serviço");
+    const response = await app(new Request(url, init));
+    if ((init?.method ?? "GET").toUpperCase() === "HEAD") {
+      return new Response(null, { status: response.status, headers: response.headers });
+    }
+    return response;
+  },
+};
 
 export interface SeedCrawl {
   dataset: Dataset;
   server: Server;
   startedAt: number;
-  /** Um por crawl. Repetir o mesmo é o teste de idempotência. */
   crawlId: string;
   rows: Row[];
 }
 
-/** Manda um crawl pela rota real de ingestão e devolve o que ela respondeu. */
+/**
+ * Uma coleta completa pela sessão de ingestão real. Devolve as contagens que a coleta
+ * produziria no journal.
+ */
 export async function ingest(crawl: SeedCrawl): Promise<Record<string, unknown>> {
-  const { rows, ...header } = crawl;
-  const body = new TextEncoder().encode(
-    [JSON.stringify(header), ...rows.map((row) => JSON.stringify(row))].join("\n"),
-  );
-
-  const timestamp = Math.floor(Date.now() / 1000);
-  const digest = hex(await crypto.subtle.digest("SHA-256", body));
-  const signature = await sign(`${timestamp}\n${crawl.crawlId}\n${digest}`);
-
-  const response = await SELF.fetch(`${ORIGIN}/internal/ingest`, {
-    method: "POST",
-    headers: {
-      "x-ingest-timestamp": String(timestamp),
-      "x-ingest-crawl-id": crawl.crawlId,
-      "x-ingest-signature": `sha256=${signature}`,
-    },
-    body,
+  if (!db) throw new Error("applyMigrations() antes de semear");
+  const session = await openCrawlSession({
+    db,
+    dataset: crawl.dataset,
+    server: crawl.server,
+    startedAt: crawl.startedAt,
+    crawlId: crawl.crawlId,
+    // O relógio da coleta, e não o de hoje: as datas dos cenários são de 2023, e com o
+    // relógio real toda oferta semeada já nasceria expirada.
+    now: () => crawl.startedAt,
+    yieldTo: async () => {},
   });
-  const payload = (await response.json()) as Record<string, unknown>;
-  if (!response.ok) {
-    throw new Error(`ingestão falhou (${response.status}): ${JSON.stringify(payload)}`);
-  }
-  // O isolate só reconfere o ponteiro do R2 a cada `POINTER_TTL_MS`. Em produção isso é
-  // o que evita uma leitura por requisição; aqui esconderia do teste o snapshot que ele
-  // mesmo acabou de publicar. Esquecer o que foi hidratado é o equivalente a "passou o
-  // tempo" — e mantém a suíte determinística em vez de dependente de relógio.
-  resetHydration();
-  return payload;
-}
 
-/** Uma assinatura deliberadamente errada, para provar que a rota recusa. */
-export async function ingestUnsigned(): Promise<Response> {
-  return SELF.fetch(`${ORIGIN}/internal/ingest`, { method: "POST", body: "{}" });
+  const byItem = new Map<number, Row[]>();
+  for (const row of crawl.rows) {
+    let rows = byItem.get(row.itemId);
+    if (!rows) byItem.set(row.itemId, (rows = []));
+    rows.push(row);
+  }
+  const batches: ItemBatch[] = [...byItem].map(([itemId, rows]) => ({ itemId, rows }));
+  if (crawl.dataset === "trading") {
+    for (const itemId of getCache(crawl.server).listings.keys()) {
+      if (!byItem.has(itemId)) batches.push({ itemId, rows: [] });
+    }
+  }
+
+  await session.applyItems(batches);
+  const result = await session.finalize(
+    {
+      planned: 1,
+      failures: 0,
+      termsComplete: 1,
+      termsFailed: 0,
+      itemsPublished: byItem.size,
+      itemsRemoved: 0,
+      itemsIncomplete: 0,
+    },
+    false,
+  );
+  return {
+    snapshotId: result.snapshotId,
+    rows: crawl.rows.length,
+    repetidas: result.repetidas,
+    agrupadas: result.agrupadas,
+    itens: byItem.size,
+  };
 }
 
 export const getJson = async (path: string): Promise<unknown> =>
@@ -91,14 +143,7 @@ export const getJson = async (path: string): Promise<unknown> =>
 
 export const getResponse = (path: string): Promise<Response> => SELF.fetch(`${ORIGIN}${path}`);
 
-/**
- * Status de uma requisição com outro `Host`.
- *
- * O helper anterior usava `node:http` cru porque `fetch` trata `host` como cabeçalho
- * proibido e o sobrescrevia em silêncio — o teste de DNS rebinding dava verde sem testar
- * nada. Com `SELF.fetch` o host vem da URL, então a defesa é exercitada de verdade e o
- * helper vira uma linha.
- */
+/** Status de uma requisição com outro host — a URL carrega o host, como o adaptador monta. */
 export const statusFromHost = async (path: string, host: string): Promise<number> =>
   (await SELF.fetch(`https://${host}${path}`)).status;
 
@@ -114,20 +159,11 @@ async function mcp(method: string, params?: unknown): Promise<Record<string, unk
   return parseMcpBody(await response.text(), response.headers.get("content-type") ?? "");
 }
 
-/**
- * O corpo do MCP, seja JSON ou SSE.
- *
- * A v2 do SDK responde `text/event-stream` para cliente de 2025 — que é o que o
- * `legacy: "stateless"` serve, e o que o conector do claude.ai é. O transporte antigo
- * respondia JSON puro (`enableJsonResponse: true`). Os dois são Streamable HTTP válido e
- * todo cliente conforme aceita ambos, mas o teste tem que ler os dois para provar que a
- * paridade continua valendo independentemente do enquadramento.
- */
+/** O corpo do MCP, seja JSON ou SSE. */
 export function parseMcpBody(text: string, contentType: string): Record<string, unknown> {
   if (!contentType.includes("text/event-stream")) {
     return JSON.parse(text) as Record<string, unknown>;
   }
-  // Uma resposta por requisição: pega o primeiro `data:` e ignora o resto do enquadramento.
   const line = text.split(/\r?\n/).find((l) => l.startsWith("data:"));
   if (!line) throw new Error(`SSE sem linha de dados: ${text.slice(0, 120)}`);
   return JSON.parse(line.slice("data:".length).trim()) as Record<string, unknown>;
@@ -148,32 +184,14 @@ export interface ToolInfo {
   inputSchema: { properties: Record<string, { description?: string }> };
 }
 
-/** O catálogo de ferramentas que o MCP publica — nomes, descrições e schemas. */
 export async function listTools(): Promise<ToolInfo[]> {
   const body = (await mcp("tools/list")) as { result: { tools: ToolInfo[] } };
   return body.result.tools;
 }
 
-/** Cria o schema no D1 local a partir do MESMO `migrations/` que o deploy aplica. */
-export async function applyMigrations(): Promise<void> {
-  const { applyD1Migrations } = await import("cloudflare:test");
-  await applyD1Migrations(env.DB, env.TEST_MIGRATIONS);
-}
-
-/**
- * Um fixture `.rrf` como bytes.
- *
- * Vem por `provide` do `vitest.config.ts` porque aqui dentro não existe `node:fs`. É a
- * mesma restrição do Worker publicado — o replay chega pelo corpo da requisição, nunca do
- * disco —, então o teste passa a exercitar o caminho de verdade.
- */
+/** Um fixture `.rrf` como bytes. */
 export function replayFixture(name: string): Uint8Array {
-  const replays = inject("replays");
-  const base64 = replays[name];
-  if (!base64) throw new Error(`fixture ${name} não foi provido pelo vitest.config.ts`);
-  return Uint8Array.from(atob(base64), (c) => c.charCodeAt(0));
+  return new Uint8Array(readFileSync(join(REPO, "src", "replay", "__tests__", "fixtures", name)));
 }
 
-/** Base64 de bytes. `Buffer` não existe aqui — é o mesmo motivo do fixture vir injetado. */
-export const toBase64 = (bytes: Uint8Array): string =>
-  btoa(String.fromCharCode(...bytes));
+export const toBase64 = (bytes: Uint8Array): string => Buffer.from(bytes).toString("base64");

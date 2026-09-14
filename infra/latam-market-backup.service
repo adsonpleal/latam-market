@@ -1,0 +1,19 @@
+# Cópia diária do banco.
+#
+# O D1 tinha recuperação a um ponto no tempo; um arquivo SQLite numa VM não tem nada. Isto é
+# o mínimo: uma cópia consistente por dia, sete dias guardados, na mesma máquina. Uma cópia
+# fora dela é o passo seguinte (Object Storage da OCI).
+#
+# `.backup` e não `cp`: copiar o arquivo vivo pega páginas no meio de uma transação. O
+# `.backup` usa a API de backup online do SQLite, por outro processo, sem travar o serviço.
+
+[Unit]
+Description=latam-market — cópia diária do banco
+After=latam-market.service
+
+[Service]
+Type=oneshot
+User=ubuntu
+Nice=15
+IOSchedulingClass=idle
+ExecStart=/bin/sh -c 'set -e; d=/var/lib/latam-market/backup; mkdir -p "$d"; f="$d/market-$(date -u +%%F).db"; sqlite3 /var/lib/latam-market/market.db ".backup $f"; gzip -f "$f"; ls -1t "$d"/market-*.db.gz | tail -n +8 | xargs -r rm -f'

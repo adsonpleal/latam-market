@@ -1,16 +1,18 @@
 /**
- * Empacota o SHIPPER num único ESM autocontido.
+ * Empacota o serviço num ESM autocontido, para a VM.
  *
- * O que este build produz encolheu junto com o que ainda roda no EC2: a API, o MCP e a
- * interface são do Worker agora, publicados por `wrangler deploy`, e não passam por aqui.
- * Sobrou o processo que agenda o coletor e manda o resultado para `/internal/ingest`.
+ * O deploy continua sendo "um arquivo, copiado por scp" — sem node_modules no servidor,
+ * sem passo de build lá. Saem três coisas:
  *
- * O deploy dele continua sendo "um arquivo, copiado por scp" — sem node_modules no
- * servidor, sem passo de build lá. O catálogo também não vem mais junto: quem precisa dele
- * é a busca, que mora no Worker e o recebe como asset estático.
+ *  - `dist/server.mjs`: API, MCP, interface e agendador da coleta;
+ *  - `dist/crawl-thread.mjs`: a worker thread que carrega o coletor, ao lado do bundle
+ *    (`node/crawl-runner.ts` a procura ali);
+ *  - `dist/import-cloudflare.mjs`: a carga única do histórico que veio do D1.
+ *
+ * A interface (`web/dist`) e as migrações (`migrations/`) viajam junto, como arquivos.
  */
 
-import { rm } from "node:fs/promises";
+import { copyFile, rm } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import * as esbuild from "esbuild";
@@ -31,30 +33,21 @@ const shared = {
   logLevel: "info",
 };
 
-/**
- * A ponte da fase de escrita dupla.
- *
- * Enquanto o serviço antigo continua coletando e servindo (para ser um alvo de rollback
- * atualizado), ele é quem fala com o coletor — dois coletores ao mesmo tempo dividiriam a
- * paciência de rede que o coletor administra sozinho. Então a ponte não coleta: ela LÊ o
- * SQLite local, em modo somente-leitura, e empurra a coleta mais recente para o Worker.
- *
- * É o mesmo binário do bootstrap, e de propósito: a carga inicial e a ponte fazem a mesma
- * coisa, e o `crawlId` preso ao id do snapshot faz reenviar o que já foi ser um no-op.
- * Sai de cena junto com o serviço antigo.
- */
-const bridge = await esbuild.build({
+const server = await esbuild.build({
   ...shared,
-  entryPoints: [resolve(root, "src/cli/bootstrap-blob.ts")],
-  outfile: resolve(root, "dist/bridge.mjs"),
-});
-
-const shipper = await esbuild.build({
-  ...shared,
-  entryPoints: [resolve(root, "src/shipper/index.ts")],
-  outfile: resolve(root, "dist/shipper.mjs"),
+  entryPoints: [resolve(root, "src/node/index.ts")],
+  outfile: resolve(root, "dist/server.mjs"),
   metafile: true,
 });
 
-const bytes = Object.values(shipper.metafile.outputs).reduce((sum, o) => sum + o.bytes, 0);
-console.log(`dist/shipper.mjs empacotado (${(bytes / 1024).toFixed(0)} KB com sourcemap)`);
+await esbuild.build({
+  ...shared,
+  entryPoints: [resolve(root, "src/cli/import-cloudflare.ts")],
+  outfile: resolve(root, "dist/import-cloudflare.mjs"),
+});
+
+// JavaScript puro e sem dependências: copiado, não empacotado.
+await copyFile(resolve(root, "src/collect/crawl-thread.mjs"), resolve(root, "dist/crawl-thread.mjs"));
+
+const bytes = Object.values(server.metafile.outputs).reduce((sum, o) => sum + o.bytes, 0);
+console.log(`dist/server.mjs empacotado (${(bytes / 1024).toFixed(0)} KB com sourcemap)`);

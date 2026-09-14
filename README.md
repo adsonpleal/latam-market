@@ -50,9 +50,8 @@ descrição no hover, filtro por origem (mochila, carrinho, equipado), botão pa
 os intransferíveis, exportação em CSV e links para o Divine Pride e para o mercado
 oficial. Tem também busca, pechinchas, maiores variações e o estado das coletas.
 
-A interface é servida pelo mesmo domínio da API — arquivos estáticos pelo Caddy, com
-`/api/*`, `/mcp` e `/healthz` indo para o serviço Node. Código e instruções de
-desenvolvimento em [`web/`](web/README.md).
+A interface é servida pelo mesmo processo e domínio da API, `/mcp` e `/healthz`. Código
+e instruções de desenvolvimento em [`web/`](web/README.md).
 
 ## Usando a API
 
@@ -139,42 +138,54 @@ Em clientes com suporte a MCP remoto (Claude Desktop, Claude Code):
 | `market_ids` | Todos os ids vistos e à venda, para cruzar com uma lista sua |
 | `data_status` | De quando são os dados |
 
-> Todas respondem a partir das coletas, que costumam ter menos de uma hora — `data_status`
+> Todas respondem a partir das coletas, que costumam ter poucos minutos — `data_status`
 > diz a idade exata. Não há consulta ao vivo: para o mercado deste instante, o link do site
 > oficial vem em `links.market` de qualquer item.
 
 ## Como funciona
 
 ```
-                      ┌──────────────────────────────────┐
-   Caddy ──── :8788 ──│  API REST  ─┐                    │
-                      │             ├─→  core/  ─→ cache │
-                      │  MCP       ─┘         ↑          │
-                      └───────────────────────│──────────┘
-                                              │
-                          SQLite  ←──── worker do crawl
-                                              │
-                                       collect/port.ts
-                                              │
-                                    coletor (componente
-                                       à parte, privado)
+  Cloudflare (TLS + cache de borda)
+          │  túnel (cloudflared)
+          ▼
+  ┌─────────────────────── VM ───────────────────────┐
+  │  node:http :8788                                 │
+  │    API REST ─┐                                   │
+  │              ├─→ core/ ─→ cache do mercado       │
+  │    MCP ──────┘              ↑ (memória)          │
+  │    interface (estática)     │                    │
+  │                             │                    │
+  │  SQLite (WAL) ←── ingest/ ←─┘                    │
+  │                     ↑ itens completos            │
+  │               worker thread ── coletor           │
+  │                                (privado)         │
+  └──────────────────────────────────────────────────┘
 ```
 
-Um processo só. `api/` e `mcp/` são casca fina sobre `core/` e **não podem** ler o
-banco direto — é isso que garante que os dois canais respondam a mesma coisa, e há um
-teste de paridade que quebra se alguém contornar.
+Um processo só, numa VM, atrás de um túnel da Cloudflare. `api/` e `mcp/` são casca fina
+sobre `core/` e **não podem** ler o banco direto — é isso que garante que os dois canais
+respondam a mesma coisa, e há um teste de paridade que quebra se alguém contornar.
 
-O mercado inteiro cabe na memória (~5 mil itens com preço, ~20 mil anúncios), então
-nenhuma leitura toca o disco. O SQLite existe para o histórico e para sobreviver a
-reinício.
+O mercado corrente cabe na memória (~6 mil itens, dezenas de milhares de anúncios), então
+nenhuma leitura de preço ou oferta toca o disco. O SQLite guarda o histórico e as ofertas
+atuais, para o processo subir de novo com o mercado inteiro. A borda da Cloudflare segura as
+leituras repetidas: as rotas de mercado ficam 60 s em cache e a VM só vê as que expiram.
 
 ### Coleta
 
-De hora em hora um worker abre um snapshot, pede as linhas ao coletor, grava cada lote na
-sua própria transação curta (é isso que deixa a API ler durante a coleta), faz os rollups e
-fecha o snapshot. Nada disso fica visível pela metade: as leituras filtram
-`snapshot.ok = 1`, então uma coleta interrompida é invisível em vez de ser um mercado com
-buracos. Uma coleta com mais de 20% de falhas é descartada pelo mesmo motivo.
+A cada 10 minutos, para cada servidor, o agendador abre uma worker thread e carrega nela o
+coletor. Ele não entrega a coleta no fim: **cada item sai assim que está completo**, ou seja,
+assim que algum termo de busca que o contém teve todas as páginas lidas. A busca do site é por
+substring, então esse termo trouxe todos os anúncios do item.
+
+A thread principal recebe esses lotes e grava cada um em transações curtas: as ofertas do
+item, as estatísticas do dia e o ponto de preço. No mesmo instante publica o item no cache,
+com uma nova revisão que muda o ETag. Um item que o coletor confirma sem anúncios sai do
+mercado. Um item que nenhuma coleta confirma há duas horas expira.
+
+O relógio de "dados de quando" só avança quando pelo menos 80% dos termos fecharam. Uma
+coleta ruim não apaga nada e não finge ser recente: o que ela completou é publicado, e o
+resto continua como estava.
 
 Quem fala com o site é um **componente à parte, mantido em repositório privado**, carregado
 em tempo de execução pelo caminho em `COLLECTOR_PATH`. A interface entre os dois é
@@ -182,82 +193,67 @@ em tempo de execução pelo caminho em `COLLECTOR_PATH`. A interface entre os do
 este serviço sabe o que fazer com o resultado.
 
 **Sem coletor instalado o serviço funciona** — sobe, avisa no log e responde a partir do que
-já houver no banco. É como um clone deste repositório roda, e é também o que acontece em
-produção se o coletor falhar em carregar: o histórico responde a maior parte das perguntas,
-então degradar é melhor que cair.
+já houver no banco. É como um clone deste repositório roda.
 
 ## Rodando localmente
 
-Precisa de **Node 22.5+** (por causa do `node:sqlite`) e **pnpm**.
+Precisa de **Node 22.13+** (por causa do `node:sqlite` sem flag) e **pnpm**.
 
 ```bash
 pnpm install
+pnpm --filter web build
 pnpm dev     # sobe em http://127.0.0.1:8788
 ```
 
 O serviço não coleta nada sozinho aqui: sem `COLLECTOR_PATH` ele avisa no log e responde a
-partir do banco. Para ter dados com que brincar, há dois caminhos:
-
-- **um banco pronto**: aponte `DB_PATH` para um `market.db` existente;
-- **NDJSON seu**: coloque em `data/raw/<run>/<dataset>.<servidor>.ndjson` e rode
-  `pnpm import --run-id <run>` (uma linha JSON por anúncio, no formato de
-  [`src/store/rows.ts`](src/store/rows.ts)).
-
-Sem nenhum dos dois o serviço sobe com o mercado vazio — funciona, só não responde preço.
+partir do banco em `DB_PATH` (padrão `data/market.db`, criado vazio na primeira vez). Sem
+dados, sobe com o mercado vazio — funciona, só não responde preço.
 
 | Comando | O que faz |
 |---|---|
 | `pnpm dev` | Servidor com recarga automática |
-| `pnpm import` | Importa NDJSON para o SQLite |
-| `pnpm test` | Testes |
+| `pnpm test` | Testes (tudo em processo, sobre SQLite em memória) |
 | `pnpm typecheck` | Tipos |
 | `pnpm build` | Bundle de produção em `dist/` |
 | `pnpm sync:items` | Atualiza o catálogo a partir do ragassets |
 
-Variáveis úteis: `PORT`, `DB_PATH`, `DATA_DIR`, `COLLECTOR_PATH`, `CRAWL_ENABLED`,
-`ALLOWED_HOSTS`, `ALLOWED_ORIGINS` (veja `src/server/config.ts`).
+Variáveis úteis: `PORT`, `HOST`, `DB_PATH`, `STATIC_DIR`, `COLLECTOR_PATH`, `CRAWL_ENABLED`,
+`CRAWL_TRADING_MIN`, `ALLOWED_HOSTS`, `ALLOWED_ORIGINS` (veja `src/config.ts`).
 
 ## Estrutura
 
 ```
 src/
-  store/     SQLite, cache quente e retenção
-  replay/    leitura de arquivos .rrf (inventário, carrinho, equipamento, armazéns)
   core/      a lógica de mercado — a única camada que API e MCP enxergam
   api/       rotas REST
   mcp/       ferramentas MCP
-  server/    processo HTTP
-  worker/    coleta periódica e retenção, em worker thread
-  collect/   a porta do coletor: a interface e o carregamento
+  app.ts     o roteamento de uma requisição, sem saber de Node
+  node/      o processo: HTTP, arquivos estáticos, agendador, manutenção
+  ingest/    grava e publica o que a coleta entrega
+  store/     SQLite, migrações e o cache do mercado
+  collect/   a porta do coletor e a worker thread que o carrega
+  replay/    leitura de arquivos .rrf (inventário, carrinho, equipamento, armazéns)
   cli/       comandos de linha
-web/         interface web (React + Vite), servida estática pelo Caddy
-infra/       systemd e Caddy
+migrations/  o esquema do banco, aplicado no boot
+web/         interface web (React + Vite), servida pelo próprio processo
+infra/       systemd, scripts da VM e o roteiro da virada
 ```
 
 ## Deploy
 
-São dois fluxos, um por push na `main`.
+Um fluxo só, por push na `main` (`deploy.yml`): typecheck, testes, build da interface, bundle
+com esbuild, envio por `scp` para a VM, `rsync` em `/opt/latam-market`, instalação das units e
+reinício. A verificação roda o [`infra/smoke.sh`](infra/smoke.sh) contra o processo local.
 
-**Serviço** (`deploy.yml`, sem filtro de caminho): typecheck, testes, bundle com
-esbuild, envio por `scp` para o EC2, `rsync` em `/opt/latam-market` e reinício do
-systemd. A verificação bate no `/healthz`, faz uma chamada MCP real e uma consulta
-REST — se qualquer uma falhar, o deploy falha.
-
-**Interface** (`web-deploy.yml`, disparado por `web/**` e pelo catálogo): typecheck,
-testes, build do Vite e `rsync` em `/opt/latam-market-web`. Não reinicia nem recarrega
-nada — arquivo estático não é configuração. A verificação confere que a interface subiu
-**e** que a API, o MCP e o `/healthz` continuam respondendo, porque os dois dividem o
-mesmo bloco do Caddy.
-
-O banco fica em `/var/lib/latam-market/market.db`, **fora** de `/opt`, porque o deploy
-usa `rsync --delete` e levaria o histórico junto.
+O banco fica em `/var/lib/latam-market/market.db`, **fora** de `/opt`, porque o deploy usa
+`rsync --delete` e levaria o histórico junto. Uma cópia diária sai pelo
+`latam-market-backup.timer`, com as últimas sete guardadas.
 
 O coletor tem deploy próprio, a partir do seu repositório, para um diretório vizinho — fora
 do alcance daquele `--delete`. Ele traz o próprio drop-in do systemd, então os dois lados
 sobem sem editar a unit um do outro.
 
-Arquivos de infraestrutura em [`infra/`](infra/), com o provisionamento manual
-necessário documentado no topo de cada um.
+A saída da Cloudflare Workers para a VM está em [`infra/CUTOVER.md`](infra/CUTOVER.md).
 
 ## Limites conhecidos
 

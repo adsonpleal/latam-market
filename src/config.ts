@@ -1,19 +1,14 @@
 /**
  * Configuração do serviço, toda por variável de ambiente.
  *
- * É só o que muda entre a máquina de desenvolvimento, o Worker e o EC2. O que o coletor
- * precisa saber para funcionar é assunto dele, e vem do ambiente dele.
+ * É só o que muda entre a máquina de desenvolvimento e a VM. O que o coletor precisa saber
+ * para funcionar é assunto dele, e vem do ambiente dele.
  *
- * Era um `const` montado no topo do módulo lendo `process.env` direto. No Worker isso não
- * existe: `env` só chega dentro do handler, e módulo é avaliado antes de qualquer
- * requisição. Por isso o objeto agora nasce com os padrões e `applyEnv` o preenche — o
- * formato de `config.x` continua igual em todos os lugares que já o usavam.
- *
- * Mora na raiz de `src/`, e não sob `server/` ou `edge/`, porque os dois lados o leem: o
- * Worker (API + MCP) e o shipper que roda ao lado do coletor.
+ * O objeto nasce com os padrões e `applyEnv` o preenche no boot. Os testes chamam
+ * `applyEnv` com outros ambientes, e o formato de `config.x` é o mesmo em todo lugar.
  */
 
-/** De onde a configuração sai: `process.env` no Node, o objeto de bindings no Worker. */
+/** De onde a configuração sai: `process.env` no processo, um objeto qualquer nos testes. */
 export type EnvSource = Record<string, unknown>;
 
 const str = (env: EnvSource, key: string, fallback: string): string => {
@@ -38,9 +33,24 @@ const DEFAULT_ORIGINS =
   "https://claude.ai,https://mercado.latam-tools.com.br,https://visuais.latam-tools.com.br,http://localhost:5173";
 
 export const config = {
-  /** 8787 já está ocupado nesta máquina. Só o shipper e o `wrangler dev` usam. */
+  /** Só o túnel fala com o servidor, então ele escuta no endereço local. */
   port: 8788,
   host: "127.0.0.1",
+
+  /** O banco, fora de `/opt/latam-market` — o deploy faz `rsync --delete` lá. */
+  dbPath: "data/market.db",
+  /** A interface já buildada (`web/dist`). */
+  staticDir: "web/dist",
+  /** Os arquivos de `migrations/`, que viajam junto com o bundle. */
+  migrationsDir: "migrations",
+  /**
+   * Quanto tempo uma oferta vive sem ser confirmada por nenhuma coleta.
+   *
+   * Um item cujos termos falham coleta após coleta não é decidido, e continua com as
+   * ofertas que tinha. Depois disto elas saem: vender o preço de duas horas atrás como "à
+   * venda agora" é pior que não mostrar.
+   */
+  offerMaxAgeMin: 120,
 
   /**
    * Endereço público do serviço.
@@ -78,33 +88,26 @@ export const config = {
   /**
    * Caminho do módulo que implementa a coleta (ver `collect/port.ts`).
    *
-   * Vazio é o padrão e um estado válido. Só o shipper o lê — no Worker é sempre vazio.
+   * Vazio é o padrão e um estado válido: o serviço sobe e serve o histórico.
    */
   collectorPath: "",
 
   crawl: {
-    /** Liga o agendador do shipper. Desligado em dev para não sair coletando sozinho. */
+    /** Liga o agendador. Desligado em dev para não sair coletando sozinho. */
     enabled: false,
     /**
-     * 30min. Foi 15 por uma hora e meia, e a tentativa é o motivo do número.
+     * 10min, para os dois servidores.
      *
-     * O piso da cadência NÃO é quanto tempo uma coleta leva — é quanto tempo o coletor
-     * deixa uma saída de molho quando ela é recusada. Se a cadência for parecida com esse
-     * descanso, a saída que tropeça só volta na coleta seguinte: perde a que está rodando
-     * inteira. E some justamente quando faz mais falta, porque a carga dela vai para as
-     * poucas outras, que também tropeçam. Cascata.
+     * O piso da cadência nunca foi quanto tempo uma coleta leva — foi quanto tempo uma saída
+     * de rede recusada fica de molho. Com poucas saídas compartilhadas, a 15 minutos a que
+     * tropeçava só voltava na coleta seguinte, e a carga dela derrubava as outras: em
+     * 2026-09-08 foram 5 coletas boas, 4 descartadas e 5 puladas.
      *
-     * Foi o que aconteceu em 2026-09-08 com 15min: 5 coletas boas, 4 DESCARTADAS por
-     * passar de 20% de unidades falhando e 5 puladas por a anterior ainda estar rodando —
-     * o frescor foi de 3min para 65. Pior que os 30min que a mudança queria melhorar.
-     *
-     * A regra que sai disso: a cadência tem que ser confortavelmente maior que o descanso,
-     * para uma saída castigada voltar DENTRO do mesmo ciclo.
-     *
-     * Descer daqui exige mais saídas distintas ou um descanso menor, e nenhuma das duas é
-     * decisão deste repositório: os números vivem no do coletor, junto do que os mediu.
+     * Com 31 endereços próprios e publicação por item, uma saída de molho some no meio das
+     * outras, e um termo que falha segura só os itens dele. As duas coisas moram no
+     * repositório do coletor; é por elas que o número pôde descer.
      */
-    tradingEveryMin: 30,
+    tradingEveryMin: 10,
     /**
      * Cadência por servidor, quando um deles merece atenção diferente do outro.
      *
@@ -126,11 +129,9 @@ export function tradingEveryMinFor(server: string): number {
 /**
  * Preenche a configuração a partir do ambiente.
  *
- * Idempotente e barata, porque roda no começo de TODA requisição do Worker: o `env` é o
- * mesmo objeto durante a vida do isolate, então a comparação por identidade faz o trabalho
- * acontecer uma vez só. Guardar por um booleano simples não serviria — os testes trocam de
- * ambiente entre casos, e um `applyEnv` que ignora o segundo ambiente seria pior que não
- * existir.
+ * Idempotente: reaplicar o MESMO objeto não faz nada. Guardar por um booleano simples não
+ * serviria — os testes trocam de ambiente entre casos, e um `applyEnv` que ignora o segundo
+ * ambiente seria pior que não existir.
  */
 let lastEnv: EnvSource | null = null;
 
@@ -139,6 +140,10 @@ export function applyEnv(env: EnvSource): void {
 
   config.port = num(env, "PORT", 8788);
   config.host = str(env, "HOST", "127.0.0.1");
+  config.dbPath = str(env, "DB_PATH", "data/market.db");
+  config.staticDir = str(env, "STATIC_DIR", "web/dist");
+  config.migrationsDir = str(env, "MIGRATIONS_DIR", "migrations");
+  config.offerMaxAgeMin = num(env, "OFFER_MAX_AGE_MIN", 120);
   config.publicUrl = str(env, "PUBLIC_URL", DEFAULT_PUBLIC_URL).replace(/\/+$/, "");
   config.allowedHosts = list(env, "ALLOWED_HOSTS", DEFAULT_HOSTS);
   config.allowedOrigins = list(env, "ALLOWED_ORIGINS", DEFAULT_ORIGINS);
@@ -150,10 +155,9 @@ export function applyEnv(env: EnvSource): void {
 
   config.collectorPath = str(env, "COLLECTOR_PATH", "");
   config.crawl.enabled = env["CRAWL_ENABLED"] === "1";
-  config.crawl.tradingEveryMin = num(env, "CRAWL_TRADING_MIN", 30);
-  // Lido por prefixo, e não por uma lista de servidores conhecidos: `SERVERS` mora em
-  // `core/` e este arquivo é lido pelos dois lados (Worker e shipper) antes de qualquer
-  // coisa. Um nome de servidor novo passa a ter cadência própria sem tocar aqui.
+  config.crawl.tradingEveryMin = num(env, "CRAWL_TRADING_MIN", 10);
+  // Lido por prefixo, e não por uma lista de servidores conhecidos: um nome de servidor
+  // novo passa a ter cadência própria sem tocar aqui.
   config.crawl.tradingEveryMinByServer = {};
   for (const key of Object.keys(env)) {
     const match = /^CRAWL_TRADING_MIN_(.+)$/.exec(key);

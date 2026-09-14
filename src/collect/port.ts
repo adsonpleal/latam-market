@@ -4,60 +4,92 @@
  * Quem coleta é um componente à parte, carregado em tempo de execução (ver `load.ts`).
  * Este arquivo é a única coisa que os dois lados compartilham, e de propósito não tem
  * dependência de execução nenhuma: nada de URL, cabeçalho, limite medido ou saída de rede.
- * Tudo isso é problema de quem implementa.
+ * Tudo isso é problema de quem implementa. **Cópia espelhada de `src/port.ts` no
+ * repositório do coletor** — mexer num lado sem o outro quebra a coleta no deploy seguinte.
  *
  * A divisão de responsabilidade que a interface desenha:
  *
- *  - o coletor sabe COMO buscar — que endereço, em que ordem, com que paciência;
+ *  - o coletor sabe COMO buscar — que endereço, em que ordem, com que paciência, e quando
+ *    um item já foi visto por inteiro;
  *  - este serviço sabe O QUE FAZER COM O RESULTADO — snapshot, transação, rollup, cache.
- *
- * `onRows` existe por causa da segunda metade: as linhas chegam em lotes e são gravadas
- * conforme chegam, cada lote na sua própria transação curta. Devolver tudo num array no
- * final seria uma coleta inteira (~20 mil linhas) viva na memória e um único lote de
- * escrita segurando o write lock — a API pararia de ler no meio da coleta.
  */
 
 import type { Dataset } from "../core/datasets.js";
 import type { Server } from "../core/servers.js";
 import type { Row } from "../store/rows.js";
 
+/** Um item com anúncio conhecido pelo serviço, e o nome com que o site o mostrou. */
+export interface KnownItem {
+  itemId: number;
+  /**
+   * O nome como o SITE o escreve (o que a coleta anterior viu, sem sufixo de slot), não o
+   * do catálogo: é contra ele que a busca casa, e uma tradução diferente no catálogo faria
+   * o coletor concluir "nenhum termo contido no nome o devolveu" de um item à venda.
+   */
+  name: string;
+}
+
+/** Um item decidido: todos os anúncios dele nesta coleta. */
+export interface ItemBatch {
+  itemId: number;
+  /**
+   * Os anúncios (`trading`, únicos por `ssi`) ou o agregado (`market-price`, uma linha).
+   * **Vazio** = item conhecido confirmado sem anúncio: remover.
+   */
+  rows: Row[];
+}
+
 export interface CrawlRequest {
   dataset: Dataset;
   server: Server;
   /**
-   * Chamado conforme as linhas chegam, para quem pediu gravá-las incrementalmente.
+   * Chamado conforme itens ficam COMPLETOS durante a coleta, e não no fim dela.
    *
-   * **Em lotes, não linha por linha.** Cada chamada custa uma transação no SQLite, então
-   * um lote por linha troca ~150 transações por ~20 mil. O tamanho natural é a unidade de
-   * busca do coletor (hoje, uma página de até 1000 linhas).
+   * Um item está completo quando um termo de busca contido no nome dele terminou de ser
+   * varrido: a busca casa substring, então aquele termo trouxe todos os anúncios do item.
+   * Termos que falharam seguram só os itens deles — o resto sai.
+   *
+   * **Um item pode vir mais de uma vez** na mesma coleta (um anúncio novo apareceu no meio,
+   * outro termo trouxe o que tinha mudado de página). Cada entrega SUBSTITUI a anterior.
+   *
+   * **Em lotes.** Uma chamada por página atendida, com os itens que ela completou.
    *
    * **Não lança.** Quem implementa chama isto de dentro do próprio laço, onde uma exceção
-   * viraria "esta unidade falhou" — classificando um erro de banco como erro de coleta.
-   * Quem grava é responsável por capturar o próprio erro e decidir o que fazer com ele.
-   *
-   * **Sem repetição dentro de uma `crawl()`.** As linhas entregues numa mesma coleta são
-   * únicas por `ssi` (`trading`) ou por `itemId` (`market-price`), e fica a primeira
-   * ocorrência. A cobertura de termos do coletor se sobrepõe, então sem isso cada anúncio
-   * chegaria umas cinco vezes. Primeira e não última porque um lote entregue não se retira:
-   * a observação mais tarde de uma vaga, com a quantidade de depois de uma venda, se perde
-   * por uma coleta. O ingest continua deduplicando por conta própria (última vence) — é a
-   * defesa no ponto de commit, e é o `repetidas` dele que acusa se esta garantia quebrar.
+   * viraria "esta unidade falhou". Quem grava captura o próprio erro.
    */
-  onRows: (rows: Row[]) => void;
+  onItems: (batches: ItemBatch[]) => void;
+  /**
+   * `trading`: os itens hoje à venda. É o que permite confirmar que um item SAIU — um item
+   * que ninguém devolve só é removido se um termo contido no nome dele completou. Sem a
+   * lista, nada é removido.
+   */
+  known?: readonly KnownItem[];
+  /**
+   * Cancela a coleta (prazo estourado). O coletor para de pedir páginas, entrega o que já
+   * está decidido e resolve.
+   */
+  signal?: AbortSignal;
 }
 
 export interface CrawlReport {
   /** Quantas unidades de trabalho o coletor planejou. */
   planned: number;
-  /** Quantas delas falharam. Quem chamou decide se a coleta ainda vale. */
+  /** Quantas delas falharam. */
   failures: number;
-  /** Quantas linhas foram descartadas por repetir uma já entregue nesta coleta. */
-  repeated: number;
+  /** Termos varridos por inteiro, e os que não (falha, ou páginas somando menos que o total). */
+  termsComplete: number;
+  termsFailed: number;
+  /** Itens entregues com anúncio ao menos uma vez. */
+  itemsPublished: number;
+  /** Itens conhecidos entregues vazios: confirmados fora de venda. */
+  itemsRemoved: number;
+  /** Itens vistos ou conhecidos que não deu para decidir: o serviço mantém o que tinha. */
+  itemsIncomplete: number;
 }
 
 export interface Collector {
   crawl(req: CrawlRequest): Promise<CrawlReport>;
-  /** Libera o que o coletor tenha aberto (conexões, túneis, processos). */
+  /** Libera o que o coletor tenha aberto (conexões, processos). */
   close(): Promise<void>;
 }
 

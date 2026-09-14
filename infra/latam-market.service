@@ -1,0 +1,73 @@
+# O serviço inteiro na VM: API REST, MCP, interface web e agendador da coleta.
+#
+# O deploy (.github/workflows/deploy.yml) instala este arquivo em
+# /etc/systemd/system/latam-market.service e reinicia a unit. Provisionamento de uma vez
+# só, fora do deploy, em infra/vm-prep.sh (swap, sqlite3, diretórios, backup).
+#
+# Quem coleta é um componente à parte, instalado ao lado e apontado por COLLECTOR_PATH. Ele
+# traz o próprio drop-in em /etc/systemd/system/latam-market.service.d/. Sem ele, este
+# serviço sobe e responde a partir do banco — só não coleta nada novo.
+#
+# Ninguém de fora fala com o processo: ele escuta em 127.0.0.1 e o público chega pelo túnel
+# da Cloudflare (cloudflared), que também faz TLS e cache de borda.
+
+[Unit]
+Description=latam-market — API, MCP, interface e coleta do mercado do RO LATAM
+After=network-online.target
+Wants=network-online.target
+
+# Em [Unit], não em [Service]: o systemd ignora com aviso se postos no lugar errado.
+StartLimitBurst=5
+StartLimitIntervalSec=120
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/opt/latam-market
+
+Environment=NODE_ENV=production
+Environment=PORT=8788
+Environment=HOST=127.0.0.1
+# ⚠ O banco FORA de /opt: o deploy faz `rsync --delete` lá, e levaria o histórico junto.
+StateDirectory=latam-market
+Environment=DB_PATH=/var/lib/latam-market/market.db
+Environment=STATIC_DIR=/opt/latam-market/web
+Environment=MIGRATIONS_DIR=/opt/latam-market/migrations
+Environment=PUBLIC_URL=https://mercado.latam-tools.com.br
+Environment=ALLOWED_HOSTS=mercado.latam-tools.com.br,mercado-vm.latam-tools.com.br,localhost,127.0.0.1
+# `visuais` é o simulador de visuais (repositório latamvisuais): o catálogo dele filtra por
+# "já visto no mercado" / "à venda agora" com `/api/v1/ids`, direto do navegador.
+Environment=ALLOWED_ORIGINS=https://claude.ai,https://mercado.latam-tools.com.br,https://visuais.latam-tools.com.br
+
+# A coleta. 10 minutos para os dois servidores; market-price a cada 6 horas. O que permitiu
+# descer de 15/60 está no comentário de `crawl.tradingEveryMin` em src/config.ts.
+Environment=CRAWL_ENABLED=1
+Environment=CRAWL_TRADING_MIN=10
+Environment=CRAWL_MARKET_MIN=360
+
+# O teto de heap é da thread principal (API, cache do mercado, catálogo). A coleta tem o
+# próprio teto, na worker thread (ver src/node/crawl-runner.ts).
+ExecStart=/usr/bin/node --max-old-space-size=200 --enable-source-maps /opt/latam-market/dist/server.mjs
+
+Restart=always
+RestartSec=5
+# Dá tempo ao SIGTERM de fechar o banco consolidando o WAL.
+TimeoutStopSec=30
+KillMode=mixed
+
+# A VM tem ~950 MB e divide com o túnel e o sistema. Medido no boot: ~70 MB de RSS; com a
+# coleta rodando na worker thread, algumas centenas. MemoryHigh freia antes do OOM.
+MemoryHigh=450M
+MemoryMax=560M
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=latam-market
+
+[Install]
+WantedBy=multi-user.target

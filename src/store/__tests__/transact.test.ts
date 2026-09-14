@@ -5,11 +5,13 @@
  * unidade coletada.
  */
 
+import { resolve } from "node:path";
+
 import { describe, expect, it } from "vitest";
 
 import { openDb, transact } from "../db.js";
 
-const fresh = () => openDb({ path: ":memory:" });
+const fresh = () => openDb({ path: ":memory:", migrationsDir: resolve(import.meta.dirname, "..", "..", "..", "migrations") });
 
 describe("transact", () => {
   it("aninha sem quebrar", () => {

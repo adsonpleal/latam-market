@@ -1,22 +1,16 @@
 /**
- * Gera o catálogo que o Worker hidrata em memória.
+ * Gera o catálogo que o servidor e a interface carregam.
  *
- * No EC2 o catálogo entrava no processo por `loadCatalogue`, que lia os 6,3 MB de
- * `data/latam-items.json` e gravava 13.846 linhas em `item`. No Worker não há disco nem
- * boot longo, e ler o catálogo do D1 a cada isolate seria varrer 13.846 linhas para
- * responder qualquer busca — em rows read, o caminho mais caro que existe.
- *
- * Então ele vira asset estático: requisição de asset é grátis e ilimitada, a Cloudflare já
- * comprime e faz cache hierárquico, e o conteúdo só muda quando o catálogo muda, que é
- * quando há deploy. Um isolate paga o download uma vez e serve o resto da vida dele.
+ * O catálogo é do jogo e só muda quando `data/latam-items.json` muda, que é quando há
+ * deploy. Então ele vira asset estático, classificado aqui, no build, e não a cada boot: o
+ * servidor lê o arquivo pronto (`store/catalogue.ts`), e a interface baixa o mesmo arquivo.
  *
  * O formato é colunar (`cols` + `rows`) e não uma lista de objetos: com 13.846 entradas,
  * repetir as seis chaves em cada uma custa mais que o dado. Medido no rodapé desta saída.
  *
- * A classificação roda AQUI, no build, chamando o mesmo `classify` que o `loadCatalogue`
- * chamava — por isso este script é TypeScript em `src/cli/` e não um `.mjs` em `tools/`.
- * Uma cópia das regras em JS ao lado seria a mesma armadilha que `util/stats.ts` existe
- * para evitar: duas definições que combinam até alguém corrigir uma só.
+ * A classificação chama o mesmo `classify` de `core/taxonomy.ts` — por isso este script é
+ * TypeScript em `src/cli/` e não um `.mjs` em `tools/`. Uma cópia das regras em JS ao lado
+ * seria duas definições que combinam até alguém corrigir uma só.
  *
  * Sai em `web/dist/generated/`, DEPOIS do `vite build` (que limpa o `dist`), e não em
  * `web/public/generated/`, porque o `build-catalogue.mjs` apaga de lá tudo que não é dele.
@@ -37,7 +31,7 @@ interface LatamEntry {
   slots?: number;
 }
 
-/** A ordem das colunas é o contrato com `store/hydrate.ts`. Mudou aqui, muda lá. */
+/** A ordem das colunas é o contrato com `store/catalogue.ts`. Mudou aqui, muda lá. */
 export const CATALOGUE_COLS = ["id", "name", "nameNorm", "slots", "itemType", "equipSlots"] as const;
 
 export interface CatalogueAsset {
@@ -108,7 +102,7 @@ if (isMain) {
     asset.rows.map((r) => Object.fromEntries(CATALOGUE_COLS.map((c, i) => [c, r[i]]))),
   ).length;
   console.log(
-    `catálogo do Worker: ${asset.rows.length} itens, ${(json.length / 1024).toFixed(0)} KB ` +
+    `catálogo: ${asset.rows.length} itens, ${(json.length / 1024).toFixed(0)} KB ` +
       `(colunar; como lista de objetos seriam ${(verbose / 1024).toFixed(0)} KB) -> ${file}`,
   );
 }

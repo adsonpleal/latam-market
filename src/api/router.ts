@@ -1,5 +1,5 @@
 /**
- * Roteador REST minúsculo sobre `node:http`.
+ * Roteador REST minúsculo sobre `Request`/`Response`.
  *
  * Sem framework porque não há o que um framework resolveria aqui: são doze rotas,
  * todas GET menos duas, e a resposta é sempre JSON. O projeto irmão (ro-mcp) segue o
@@ -27,6 +27,7 @@ import {
   history,
   itemPrice,
   itemPrices,
+  marketRevision,
   searchPrices,
 } from "../core/prices.js";
 import { sellCandidates, valueReplay } from "../core/replay.js";
@@ -136,22 +137,24 @@ function serverOf(url: URL): Server {
 /**
  * ETag de uma resposta de mercado.
  *
- * Identifica "mesma pergunta, mesmos dados": o par de snapshots do servidor mais a consulta
- * canônica. `tradingAgeMin` fica DE FORA de propósito — ele anda com o relógio dentro de um
- * mesmo snapshot, e incluí-lo faria o ETag mudar a cada segundo, que é o oposto do que ele
- * serve. É por isso também que ele é fraco (`W/`): o corpo muda, o dado não.
+ * Identifica "mesma pergunta, mesmos dados": a revisão do mercado do servidor mais a
+ * consulta canônica. A revisão muda a cada publicação — inclusive no meio de uma coleta,
+ * que agora publica item por item. Os carimbos da coleta (`tradingAt`) só andam quando ela
+ * fecha, e um ETag feito deles responderia 304 com metade dos itens já mudados.
+ * `tradingAgeMin` fica DE FORA de propósito — ele anda com o relógio, e incluí-lo faria o
+ * ETag mudar a cada segundo. É por isso também que ele é fraco (`W/`): o corpo muda, o dado não.
  *
  * Vale para as duas rotas que um cliente relê o tempo todo — `/ids`, que o site de visuais
  * busca a cada carregamento, e `/prices`, que a aba de favoritos consulta em laço. Nas duas
  * o corpo é grande e quase sempre idêntico ao anterior, que é exatamente o caso de um 304.
  */
 function marketEtag(server: Server, url: URL): string {
-  const { marketAt, tradingAt } = freshness(server);
+  const revision = marketRevision(server);
   const query = [...url.searchParams]
     .sort(([a], [b]) => (a < b ? -1 : 1))
     .map(([k, v]) => `${k}=${v}`)
     .join("&");
-  return etagFor([server, marketAt, tradingAt, url.pathname, query]);
+  return etagFor([server, revision, url.pathname, query]);
 }
 
 /**
@@ -179,7 +182,7 @@ function nextTradingAt(
  * Devolve a `Response` da rota, ou `null` quando o caminho não é da API.
  *
  * `null` em vez de 404 aqui de propósito: quem decide o que fazer com "não é minha rota" é
- * o `worker.ts`, que ainda tem o asset estático para tentar depois.
+ * o `app.ts`, que ainda tem o arquivo estático para tentar depois.
  */
 export async function handleApi(ctx: RouteContext): Promise<Response | null> {
   const { url, db } = ctx;

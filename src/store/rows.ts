@@ -8,7 +8,7 @@
  * ⚠ **Nada valida isto em tempo de execução.** `writeRows` passa os campos direto para o
  * SQLite, e vários deles caem num `?? null` ou `|| ""` no caminho — então um campo renomeado
  * do lado do coletor não vira erro, vira coluna vazia gravada em silêncio. Se um dia isso
- * doer, o lugar de checar é o primeiro lote de cada coleta, em `crawl-worker.ts`, contra um
+ * doer, o lugar de checar é a primeira entrega de cada coleta, em `node/crawl-runner.ts`, contra um
  * schema do zod (que já é dependência): um lote por run é de graça e transforma deriva muda
  * em coleta abortada.
  *

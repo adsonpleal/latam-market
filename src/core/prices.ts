@@ -41,6 +41,11 @@ export function freshness(server: Server): Freshness {
   };
 }
 
+/** Muda a cada publicação do mercado deste servidor. É o que os ETags usam. */
+export function marketRevision(server: Server): string {
+  return getCache(server).revision;
+}
+
 export function offerSummary(server: Server, itemId: number): OfferSummary | null {
   const cache = getCache(server);
   const listings = cache.listings.get(itemId);

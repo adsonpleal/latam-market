@@ -1,14 +1,17 @@
 name: Deploy
 
-# Um deploy por push na main. Um Worker só serve a API, o MCP e a interface, então não há
-# motivo para filtrar por caminho: qualquer mudança em src/, web/ ou data/ muda o que roda.
+# Um deploy por push na main. Um processo só na VM serve a API, o MCP, a interface e a
+# coleta, então não há motivo para filtrar por caminho: qualquer mudança em src/, web/ ou
+# data/ muda o que roda.
 on:
   push:
     branches: [main]
   workflow_dispatch:
 
+# O mesmo grupo do deploy do coletor: os dois reiniciam a MESMA unit, e dois restarts
+# cruzados deixariam o processo subindo com metade de cada versão.
 concurrency:
-  group: latam-market-deploy
+  group: latam-market-shipper
   cancel-in-progress: false
 
 jobs:
@@ -41,19 +44,19 @@ jobs:
           pnpm typecheck
           pnpm --filter web typecheck
 
-      # Duas suítes: `node` para a lógica pura, `workers` para o que só tem sentido dentro
-      # do runtime de produção — a paridade entre API e MCP, a ingestão e o cache de borda.
-      # Se qualquer uma quebrar, nada sobe.
+      # A suíte inteira roda em processo, sobre SQLite em memória — a paridade entre API e
+      # MCP inclusive. Se quebrar, nada sobe.
       - name: Testes
         run: |
           pnpm test
           pnpm --filter web test
 
-      - name: Build da interface
+      - name: Build
         run: |
           pnpm --filter web build
-          # DEPOIS do vite build, que limpa o dist: é o catálogo que o Worker hidrata.
+          # DEPOIS do vite build, que limpa o dist: é o catálogo que o servidor carrega.
           pnpm catalogue
+          pnpm build
 
       - name: Conferir os artefatos
         run: |
@@ -61,34 +64,65 @@ jobs:
           ls web/dist/assets/*.js >/dev/null
           ls web/dist/generated/catalogue.*.json >/dev/null
           ls web/dist/generated/descriptions.*.json >/dev/null
-          # Os pré-comprimidos sumiram junto com o Caddy: a Cloudflare comprime na entrega,
-          # e mantê-los seria servir arquivo morto com o Content-Type errado.
-          ! ls web/dist/**/*.br >/dev/null 2>&1
+          test -s dist/server.mjs
+          test -s dist/crawl-thread.mjs
+          test -s dist/import-cloudflare.mjs
+          ls migrations/*.sql >/dev/null
+          tar -czf service.tar.gz dist web/dist migrations infra
+          ls -lh service.tar.gz
 
-      # ANTES do deploy, e é a ordem que importa: entre este passo e o próximo o Worker
-      # antigo ainda está no ar, então uma migração tem que ser compatível com ele.
-      - name: Migrações do D1
-        uses: cloudflare/wrangler-action@v3
-        with:
-          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          accountId: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
-          command: d1 migrations apply latam-market --remote
+      - name: Configurar SSH
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/deploy.pem
+          chmod 600 ~/.ssh/deploy.pem
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts 2>/dev/null
 
-      - name: Publicar o Worker
-        id: deploy
-        uses: cloudflare/wrangler-action@v3
-        with:
-          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          accountId: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
-          command: deploy
+      # Na VM: troca os arquivos e reinicia a unit. O banco não mora aqui (StateDirectory,
+      # /var/lib/latam-market), então o `--delete` só leva código velho.
+      - name: Enviar e reiniciar
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          scp -i ~/.ssh/deploy.pem service.tar.gz "ubuntu@$DEPLOY_HOST:~/"
+          ssh -i ~/.ssh/deploy.pem "ubuntu@$DEPLOY_HOST" '
+            set -e
+            rm -rf ~/service-next && mkdir -p ~/service-next
+            tar -xzf ~/service.tar.gz -C ~/service-next
+            test -s ~/service-next/dist/server.mjs
+            mv ~/service-next/web/dist ~/service-next/web-dist && rm -rf ~/service-next/web && mv ~/service-next/web-dist ~/service-next/web
 
-      # As mesmas checagens de contrato de sempre — healthz, catálogo carregado, MCP, REST
-      # e a raiz servindo HTML —, agora contra o Worker. `BASE` é variável porque até o
-      # cutover o Worker vive só em *.workers.dev; depois passa a ser o domínio.
+            sudo install -d -o ubuntu -g ubuntu /opt/latam-market
+            sudo rsync -a --delete ~/service-next/ /opt/latam-market/
+            sudo chown -R ubuntu:ubuntu /opt/latam-market
+            chmod +x /opt/latam-market/infra/smoke.sh /opt/latam-market/infra/vm-prep.sh
+            rm -rf ~/service-next ~/service.tar.gz
+
+            for f in latam-market.service latam-market-backup.service latam-market-backup.timer; do
+              sudo cp "/opt/latam-market/infra/$f" /etc/systemd/system/
+            done
+            sudo systemctl daemon-reload
+            sudo systemctl enable --quiet latam-market latam-market-backup.timer
+            sudo systemctl start latam-market-backup.timer
+            sudo systemctl restart latam-market
+          '
+
+      # Contra o processo local, pelo Host público: o domínio pode ainda estar apontando para
+      # outro lugar (antes da virada do túnel), e o que este deploy trocou foi a VM.
       - name: Verificar
         env:
-          BASE: ${{ vars.DEPLOY_BASE_URL }}
-        run: bash infra/smoke.sh "$BASE"
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          ssh -i ~/.ssh/deploy.pem "ubuntu@$DEPLOY_HOST" '
+            for _ in $(seq 60); do
+              curl -sf -H "Host: mercado.latam-tools.com.br" http://127.0.0.1:8788/healthz >/dev/null && break
+              sleep 1
+            done
+            HOST_HEADER=mercado.latam-tools.com.br bash /opt/latam-market/infra/smoke.sh http://127.0.0.1:8788
+          '
 
       # A referência é a última versão ANUNCIADA, não a do commit anterior.
       #

@@ -5,16 +5,16 @@
  * de, com pressa, montar uma consulta direto dentro de um handler; o que impede é isto
  * quebrar quando ele fizer.
  *
- * Roda DENTRO do `workerd`, pelo mesmo `worker.ts` que é publicado, com D1 e R2 locais.
- * O andaime (semeadura pela rota de ingestão, chamadas ao MCP, helpers de host) está em
+ * Roda em processo, pelo mesmo `createApp` que o servidor publica, com SQLite em memória.
+ * O andaime (semeadura pela sessão de ingestão, chamadas ao MCP, helpers de host) está em
  * `parity-setup.ts`.
  */
 
-import { SELF } from "cloudflare:test";
 import { beforeAll, describe, expect, it } from "vitest";
 
 import { nextTradingRun } from "../core/schedule.js";
 import { config, tradingEveryMinFor } from "../config.js";
+import { FRESHNESS_EDGE_MAX } from "../edge/respond.js";
 import { DEFAULT_SERVER } from "../core/servers.js";
 import type { MarketPriceRow, TradingRow } from "../store/rows.js";
 import {
@@ -23,10 +23,10 @@ import {
   getJson,
   getResponse,
   ingest,
-  ingestUnsigned,
   ORIGIN,
   listTools,
   replayFixture,
+  SELF,
   statusFromHost,
   toBase64,
   type ToolInfo,
@@ -76,7 +76,7 @@ const anuncio = (
 });
 
 /**
- * O mundo dos testes, montado pela rota real de ingestão.
+ * O mundo dos testes, montado pela sessão real de ingestão.
  *
  * A ordem importa e é a de produção: primeiro o agregado do site (`market-price`), depois
  * os anúncios (`trading`). O `SOLD_OUT` entra num crawl de anúncios ANTERIOR e não aparece
@@ -268,11 +268,9 @@ describe("higiene do HTTP", () => {
   /**
    * Uma coleta de agregado não pode apagar os anúncios.
    *
-   * Substitui o teste do snapshot `source = 'live'`: aquele guardava a escolha do snapshot
-   * corrente numa consulta que não existe mais — hoje quem manda é o ponteiro no R2. O
-   * risco equivalente no desenho novo é este: o retrato é a UNIÃO de dois datasets, e cada
-   * ingestão reescreve só a metade dela. Se a metade errada fosse zerada, o mercado
-   * apareceria vazio entre uma coleta de `market-price` e a próxima de `trading`.
+   * O mercado é a UNIÃO de dois datasets, e cada coleta reescreve só a metade dela. Se a
+   * metade errada fosse zerada, o mercado apareceria vazio entre uma coleta de
+   * `market-price` e a próxima de `trading`.
    */
   it("uma coleta de market-price preserva os anúncios do retrato", async () => {
     await ingest({
@@ -971,14 +969,13 @@ describe("cabeçalhos de cache", () => {
   });
 
   /**
-   * O teto de 300 s existe por causa do `tradingAgeMin`.
+   * O teto da borda existe por causa do `tradingAgeMin` e da publicação por item.
    *
-   * Esse campo é calculado ao montar a resposta e vai ASSADO no corpo. Uma resposta
-   * cacheada em T e servida em T+280s subestima a idade em 280 s. Com o teto, o erro fica
-   * limitado a cinco minutos — e o `Age` que a Cloudflare acrescenta nos acertos permite
-   * corrigir. Sem ele, um agente diria "coletado há 2 minutos" sobre um dado de meia hora.
+   * O campo é calculado ao montar a resposta e vai ASSADO no corpo; e o mercado muda item a
+   * item, conforme a coleta anda. Uma resposta segurada na borda além do teto esconderia
+   * boa parte de um ciclo de 10 minutos.
    */
-  it("nenhuma rota com freshness passa de 300s na borda", async () => {
+  it("nenhuma rota com freshness passa do teto na borda", async () => {
     for (const path of [
       `/api/v1/items?q=pocao`,
       `/api/v1/items/${ITEM_ID}`,
@@ -988,7 +985,7 @@ describe("cabeçalhos de cache", () => {
     ]) {
       const edge = (await headers(path)).get("cloudflare-cdn-cache-control") ?? "";
       const sMaxAge = Number(/s-maxage=(\d+)/.exec(edge)?.[1]);
-      expect(sMaxAge, path).toBeLessThanOrEqual(300);
+      expect(sMaxAge, path).toBeLessThanOrEqual(FRESHNESS_EDGE_MAX);
     }
   });
 
@@ -1047,56 +1044,23 @@ describe("cabeçalhos de cache", () => {
 });
 
 /**
- * A segunda camada de cache não pode responder o retrato errado.
+ * A publicação por item muda o mercado no meio de uma coleta, e o ETag tem que acompanhar.
  *
- * Ela guarda por id de snapshot, e os dois erros abaixo foram encontrados justamente ao
- * ligá-la — os dois serviam dado velho ou de outro servidor com cara de resposta correta.
+ * O ETag antigo era feito dos carimbos das coletas, que só andam quando uma coleta fecha. Com
+ * itens entrando a cada página, isso responderia 304 a quem já tinha a versão de antes deles.
  */
-describe("cache interno por snapshot", () => {
-  it("o segundo pedido idêntico vem do cache", async () => {
-    // Consulta exclusiva deste teste: qualquer uma já usada acima entraria já quente.
-    const path = `/api/v1/items?q=pocao&sort=median&limit=7`;
-    expect((await getResponse(path)).headers.get("x-snapshot-cache")).toBe("miss");
-    expect((await getResponse(path)).headers.get("x-snapshot-cache")).toBe("hit");
-  });
-
-  it("a ordem dos parâmetros não cria duas entradas", async () => {
-    await getResponse(`/api/v1/items?q=elixir&limit=5`);
-    // A borda chavearia pela URL crua e trataria isto como outra pergunta.
-    const invertido = await getResponse(`/api/v1/items?limit=5&q=elixir`);
-    expect(invertido.headers.get("x-snapshot-cache")).toBe("hit");
-  });
-
-  it("um acerto devolve os cabeçalhos públicos, não os internos", async () => {
-    const path = `/api/v1/items/${ITEM_ID}/offers`;
-    const primeiro = await getResponse(path);
-    const segundo = await getResponse(path);
-    expect(segundo.headers.get("x-snapshot-cache")).toBe("hit");
-    // O TTL interno é do cache, não do cliente: sem restaurar, o navegador herdaria os
-    // 300 s da entrada e a borda ficaria sem diretiva nenhuma.
-    expect(segundo.headers.get("cache-control")).toBe(primeiro.headers.get("cache-control"));
-    expect(segundo.headers.get("cloudflare-cdn-cache-control")).toBe(
-      primeiro.headers.get("cloudflare-cdn-cache-control"),
-    );
-  });
-
-  /**
-   * Uma coleta de `market-price` invalida o cache, mesmo sem tocar nos anúncios.
-   *
-   * O retrato é a união de dois datasets com sequências independentes. Com só o snapshot de
-   * `trading` na chave, o agregado novo ficava invisível até a coleta de lojas seguinte —
-   * meia hora servindo o preço médio anterior como se fosse o atual.
-   */
-  it("coleta de market-price invalida o que estava guardado", async () => {
+describe("ETag acompanha cada publicação", () => {
+  it("uma coleta nova troca o ETag de quem perguntou antes", async () => {
     const path = `/api/v1/items/${ITEM_ID}`;
-    await getResponse(path);
-    expect((await getResponse(path)).headers.get("x-snapshot-cache")).toBe("hit");
+    const antes = await getResponse(`/api/v1/prices?items=${ITEM_ID}`);
+    const etag = antes.headers.get("etag")!;
+    expect((await SELF.fetch(`${ORIGIN}/api/v1/prices?items=${ITEM_ID}`, { headers: { "if-none-match": etag } })).status).toBe(304);
 
     await ingest({
       dataset: "market-price",
       server: "FREYA",
       startedAt: 1_850_000_000,
-      crawlId: "market-freya-invalida-cache",
+      crawlId: "market-freya-troca-etag",
       rows: [
         {
           itemId: ITEM_ID, itemName: "Poção Vermelha",
@@ -1106,26 +1070,18 @@ describe("cache interno por snapshot", () => {
       ],
     });
 
-    const depois = await getResponse(path);
-    expect(depois.headers.get("x-snapshot-cache")).toBe("miss");
-    const corpo = (await depois.json()) as { market: { totalSold: number } };
+    const depois = await SELF.fetch(`${ORIGIN}/api/v1/prices?items=${ITEM_ID}`, { headers: { "if-none-match": etag } });
+    expect(depois.status).toBe(200);
+    const corpo = (await getJson(path)) as { market: { totalSold: number } };
     expect(corpo.market.totalSold).toBe(7000);
   });
 
-  /**
-   * Um `?server=` inválido continua sendo 400.
-   *
-   * A chave tira `server` dos parâmetros de propósito (ausente e explícito são a mesma
-   * pergunta). Sem validar antes, "NIDOGG" caía na chave do padrão e recebia a resposta de
-   * FREYA com status 200 — exatamente o erro silencioso que `serverOf` existe para evitar.
-   */
-  it("servidor inválido não é servido do cache do padrão", async () => {
+  it("servidor inválido continua 400", async () => {
     const res = await getResponse(`/api/v1/items/${ITEM_ID}?server=NIDOGG`);
     expect(res.status).toBe(400);
-    expect(res.headers.get("x-snapshot-cache")).toBeNull();
   });
 
-  it("os dois servidores não compartilham entrada", async () => {
+  it("os dois servidores não se misturam", async () => {
     const freya = (await getJson(`/api/v1/items/${ITEM_ID}?server=FREYA`)) as {
       offers: { min: number };
     };
