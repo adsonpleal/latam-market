@@ -25,12 +25,16 @@ import type { ItemBrief } from "./types.js";
 const MAX_DAYS = 90;
 
 /**
- * Memo dos resultados, chaveado pelos argumentos e pela coleta de origem.
+ * Memo das consultas a `listing_daily`, chaveado pelos argumentos e pela HORA.
  *
- * As entradas só mudam quando um crawl fecha um snapshot — de hora em hora. Sem isso,
- * cada requisição refaz um agregado que cresce com o histórico.
+ * A hora, e não a coleta: `listing_daily` só muda quando o rollup de hora em hora roda,
+ * então uma coleta nova não muda nada do que estas consultas leem. Chavear pelo id do
+ * snapshot fazia cada coleta — e cada isolate — refazer a varredura: foram 219 execuções
+ * num dia, e com a cadência mais curta seriam várias vezes isso.
  */
 const memo = new Map<string, unknown>();
+
+const hourBucket = (): number => Math.floor(Date.now() / 3_600_000);
 
 function memoized<T>(
   kind: string,
@@ -38,15 +42,14 @@ function memoized<T>(
   args: unknown,
   compute: () => Promise<T>,
 ): Promise<T> {
-  const cache = getCache(server);
   // O servidor entra na chave: sem ele, a primeira resposta de FREYA seria servida
-  // para NIDHOGG e vice-versa — os ids de snapshot são de sequências independentes.
-  const key = `${kind}:${server}:${cache.tradingSnapshotId}:${JSON.stringify(args)}`;
+  // para NIDHOGG e vice-versa.
+  const key = `${kind}:${server}:${hourBucket()}:${JSON.stringify(args)}`;
   const hit = memo.get(key);
   if (hit !== undefined) return hit as Promise<T>;
 
-  // Uma coleta nova invalida tudo de uma vez: as chaves antigas carregam o id
-  // anterior e nunca mais seriam consultadas.
+  // Uma hora nova invalida tudo de uma vez: as chaves antigas carregam o balde anterior
+  // e nunca mais seriam consultadas.
   if (memo.size > 64) memo.clear();
 
   // Guarda a PROMESSA, não o valor resolvido: duas requisições simultâneas para o mesmo
@@ -59,6 +62,41 @@ function memoized<T>(
   memo.set(key, value);
   return value;
 }
+
+/**
+ * Primeiro e último ponto diário de cada item dentro da janela.
+ *
+ * A ORDEM das junções é o que custa. Com `JOIN` comum o planejador escolhia varrer
+ * `listing_daily l` inteira como laço externo e, para cada linha, percorrer o histórico
+ * do item em `f` — ~11 milhões de linhas lidas por execução no D1, onde a consulta
+ * certa lê ~250 mil. `MATERIALIZED` calcula `bounds` uma vez, e `CROSS JOIN` é a forma
+ * de o SQLite respeitar a ordem escrita: `b` por fora, `f` e `l` como buscas pela chave
+ * primária inteira. Exportada para `store/__tests__/movers-query.test.ts` conferir o plano.
+ *
+ * Parâmetros `?` anônimos, e não `?1`: o `node:sqlite` recusa parâmetro numerado ligado por
+ * posição ("column index out of range"), e a consulta precisa rodar nos dois. Parâmetros:
+ * `server, from, server, server, minStores, minPrice, minPrice`.
+ */
+export const MOVERS_SQL = `WITH bounds AS MATERIALIZED (
+     SELECT item_id, MIN(day) AS first_day, MAX(day) AS last_day
+       FROM listing_daily
+      WHERE server = ? AND day >= ?
+      GROUP BY item_id
+     HAVING COUNT(*) >= 2
+   )
+   SELECT b.item_id,
+          f.median AS before, f.listings AS before_stores,
+          l.median AS now,    l.listings AS now_stores
+     FROM bounds b
+    CROSS JOIN listing_daily f
+    CROSS JOIN listing_daily l
+    WHERE f.server = ? AND f.item_id = b.item_id AND f.day = b.first_day
+      AND l.server = ? AND l.item_id = b.item_id AND l.day = b.last_day
+      AND l.listings >= ? AND f.median >= ? AND l.median >= ?`;
+
+/** Média das medianas diárias por item na janela — o "preço usual" das pechinchas. */
+export const USUAL_PRICES_SQL = `SELECT item_id, AVG(median) AS usual, COUNT(*) AS pts
+   FROM listing_daily WHERE server = ? AND day >= ? GROUP BY item_id HAVING pts >= 2`;
 
 export interface Mover {
   item: ItemBrief;
@@ -105,20 +143,10 @@ async function computeMovers(
   const now = Math.floor(Date.now() / 1000);
   const from = Math.floor((now - days * 86400) / 86400) * 86400;
 
-  // Primeiro e último ponto diário de cada item dentro da janela. Fazer isso em SQL
-  // evita trazer a série inteira de 5 mil itens só para pegar dois valores de cada.
+  // Fazer isso em SQL evita trazer a série inteira de 5 mil itens só para pegar dois
+  // valores de cada.
   const rows = await db.all<Record<string, number>>(
-    `WITH bounds AS (
-         SELECT item_id, MIN(day) AS first_day, MAX(day) AS last_day, COUNT(*) AS pts
-           FROM listing_daily WHERE server = ? AND day >= ? GROUP BY item_id HAVING pts >= 2
-       )
-       SELECT b.item_id,
-              f.median AS before, f.listings AS before_stores,
-              l.median AS now,    l.listings AS now_stores
-         FROM bounds b
-         JOIN listing_daily f ON f.server = ? AND f.item_id = b.item_id AND f.day = b.first_day
-         JOIN listing_daily l ON l.server = ? AND l.item_id = b.item_id AND l.day = b.last_day
-        WHERE l.listings >= ? AND f.median >= ? AND l.median >= ?`,
+    MOVERS_SQL,
     server,
     from,
     server,
@@ -181,34 +209,38 @@ export interface DealsOptions {
  * contra a MEDIANA histórica, não contra o mínimo histórico — senão todo item cujo
  * dono errou o preço uma vez apareceria como pechincha para sempre.
  */
-export function findDeals(
+export async function findDeals(
   db: Db,
   server: Server,
   opts: DealsOptions = {},
 ): Promise<Deal[]> {
-  return memoized("deals", server, opts, () => computeDeals(db, server, opts));
+  const days = Math.min(Math.max(opts.days ?? 14, 2), MAX_DAYS);
+  // Só o "preço usual" vai para o memo: ele sai de `listing_daily`, que muda de hora em
+  // hora. A comparação com as ofertas de AGORA é refeita a cada chamada — é barata, e as
+  // ofertas mudam a cada coleta.
+  const usualByItem = await memoized("deals-usual", server, { days }, () =>
+    usualPrices(db, server, days),
+  );
+  return dealsFrom(server, usualByItem, opts);
 }
 
-async function computeDeals(
-  db: Db,
-  server: Server,
-  opts: DealsOptions,
-): Promise<Deal[]> {
-  const days = Math.min(Math.max(opts.days ?? 14, 2), MAX_DAYS);
-  const minDiscount = opts.minDiscountPct ?? 25;
-  const minPrice = opts.minPrice ?? 5000;
-  const minStores = opts.minStores ?? 2;
-  const limit = Math.min(opts.limit ?? 20, 100);
-
+async function usualPrices(db: Db, server: Server, days: number): Promise<Map<number, number>> {
   const from = Math.floor((Date.now() / 1000 - days * 86400) / 86400) * 86400;
   const usualByItem = new Map<number, number>();
   const rows = await db.all<Record<string, number>>(
-    `SELECT item_id, AVG(median) AS usual, COUNT(*) AS pts
-       FROM listing_daily WHERE server = ? AND day >= ? GROUP BY item_id HAVING pts >= 2`,
+    USUAL_PRICES_SQL,
     server,
     from,
   );
   for (const r of rows) usualByItem.set(r["item_id"]!, r["usual"]!);
+  return usualByItem;
+}
+
+function dealsFrom(server: Server, usualByItem: Map<number, number>, opts: DealsOptions): Deal[] {
+  const minDiscount = opts.minDiscountPct ?? 25;
+  const minPrice = opts.minPrice ?? 5000;
+  const minStores = opts.minStores ?? 2;
+  const limit = Math.min(opts.limit ?? 20, 100);
 
   const cache = getCache(server);
   const deals: Deal[] = [];
