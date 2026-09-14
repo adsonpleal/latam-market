@@ -1,5 +1,10 @@
 # Virada da Cloudflare para a VM
 
+> **Feita em 2026-09-14.** Fica como registro de como o serviço chegou aqui e de como
+> refazer a parte da infraestrutura se a VM for trocada. O workflow de export e os secrets
+> da Cloudflare no GitHub já foram removidos; o export ficou como artefato da execução
+> 34893170041 (7 dias).
+
 O serviço sai do Worker (D1 + R2) e passa a rodar inteiro na VM da OCI: um processo Node com
 SQLite local, atrás de um túnel da Cloudflare. A coleta sobe junto, com publicação por item e
 cadência de 10 minutos. Não há usuários reais ainda, então a janela de indisponibilidade é
@@ -18,10 +23,11 @@ Registro do que existe, para refazer se a VM for trocada:
   túnel, então é colado por quem tem acesso à conta.
 - **Dashboard** → Networking → **Tunnels** (no painel principal; não precisa do Zero Trust):
   túnel `latam-market`, rota *Published application*
-  `mercado-vm.latam-tools.com.br` → `http://127.0.0.1:8788`. O CNAME foi criado pelo painel.
+  `mercado.latam-tools.com.br` → `http://127.0.0.1:8788`. O CNAME foi criado pelo painel. Na
+  virada existiu também `mercado-vm`, temporário, já removido.
 - **Dashboard** → latam-tools.com.br → Caching → **Cache Rules**, regra
   "latam-market: API e arquivos gerados seguem o cache-control da origem":
-  `(http.host in {"mercado.latam-tools.com.br" "mercado-vm.latam-tools.com.br"} and (starts_with(http.request.uri.path, "/api/v1/") or starts_with(http.request.uri.path, "/generated/") or starts_with(http.request.uri.path, "/assets/")))`
+  `(http.host eq "mercado.latam-tools.com.br" and (starts_with(http.request.uri.path, "/api/v1/") or starts_with(http.request.uri.path, "/generated/") or starts_with(http.request.uri.path, "/assets/")))`
   → *Eligible for cache*, TTLs no padrão (seguem os cabeçalhos da origem). `/mcp`, `/healthz`
   e o HTML não entram na regra e continuam `DYNAMIC`.
 

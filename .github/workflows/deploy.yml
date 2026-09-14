@@ -11,7 +11,7 @@ on:
 # O mesmo grupo do deploy do coletor: os dois reiniciam a MESMA unit, e dois restarts
 # cruzados deixariam o processo subindo com metade de cada versão.
 concurrency:
-  group: latam-market-shipper
+  group: latam-market
   cancel-in-progress: false
 
 jobs:

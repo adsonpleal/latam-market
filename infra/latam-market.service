@@ -34,7 +34,7 @@ Environment=DB_PATH=/var/lib/latam-market/market.db
 Environment=STATIC_DIR=/opt/latam-market/web
 Environment=MIGRATIONS_DIR=/opt/latam-market/migrations
 Environment=PUBLIC_URL=https://mercado.latam-tools.com.br
-Environment=ALLOWED_HOSTS=mercado.latam-tools.com.br,mercado-vm.latam-tools.com.br,localhost,127.0.0.1
+Environment=ALLOWED_HOSTS=mercado.latam-tools.com.br,localhost,127.0.0.1
 # `visuais` é o simulador de visuais (repositório latamvisuais): o catálogo dele filtra por
 # "já visto no mercado" / "à venda agora" com `/api/v1/ids`, direto do navegador.
 Environment=ALLOWED_ORIGINS=https://claude.ai,https://mercado.latam-tools.com.br,https://visuais.latam-tools.com.br
