@@ -8,40 +8,24 @@ aceita e nada fica na Cloudflare para reversão — a reversão é o export guar
 Marcações: **VM** = na máquina (`ssh ubuntu@<host>`), **CI** = workflow do GitHub,
 **Dashboard** = painel da Cloudflare.
 
-## 0. Preparo (uma vez)
+## 0. Preparo (uma vez) — FEITO em 2026-09-14
 
-**VM**:
+Registro do que existe, para refazer se a VM for trocada:
 
-```bash
-bash /opt/latam-market/infra/vm-prep.sh     # swap, sqlite3, diretórios
-```
+- **VM**: swap de 2 GB, `sqlite3` e `cloudflared` (repositório `pkg.cloudflare.com`,
+  `any main`) instalados. O `cloudflared` roda como serviço (`systemctl status cloudflared`),
+  instalado com o comando que o painel mostra ao criar o túnel — ele carrega o token do
+  túnel, então é colado por quem tem acesso à conta.
+- **Dashboard** → Networking → **Tunnels** (no painel principal; não precisa do Zero Trust):
+  túnel `latam-market`, rota *Published application*
+  `mercado-vm.latam-tools.com.br` → `http://127.0.0.1:8788`. O CNAME foi criado pelo painel.
+- **Dashboard** → latam-tools.com.br → Caching → **Cache Rules**, regra
+  "latam-market: API e arquivos gerados seguem o cache-control da origem":
+  `(http.host in {"mercado.latam-tools.com.br" "mercado-vm.latam-tools.com.br"} and (starts_with(http.request.uri.path, "/api/v1/") or starts_with(http.request.uri.path, "/generated/") or starts_with(http.request.uri.path, "/assets/")))`
+  → *Eligible for cache*, TTLs no padrão (seguem os cabeçalhos da origem). `/mcp`, `/healthz`
+  e o HTML não entram na regra e continuam `DYNAMIC`.
 
-(Na primeira vez o `/opt/latam-market` ainda não existe: rode o script a partir de um clone,
-ou depois do primeiro deploy do serviço, que o cria.)
-
-**Dashboard** — Zero Trust → Networks → Tunnels → *Create a tunnel* (cloudflared), nome
-`latam-market`. Copie o comando de instalação que ele mostra e rode na **VM**:
-
-```bash
-curl -fsSL https://pkg.cloudflare.com/cloudflare-main.gpg | sudo tee /usr/share/keyrings/cloudflare-main.gpg >/dev/null
-echo 'deb [signed-by=/usr/share/keyrings/cloudflare-main.gpg] https://pkg.cloudflare.com/cloudflared noble main' | sudo tee /etc/apt/sources.list.d/cloudflared.list
-sudo apt-get update && sudo apt-get install -y cloudflared
-sudo cloudflared service install <TOKEN-DO-PAINEL>
-```
-
-No túnel, adicione o *Public Hostname* temporário:
-`mercado-vm.latam-tools.com.br` → `HTTP` → `127.0.0.1:8788`.
-
-**Dashboard** — Caching → Cache Rules (três regras):
-
-1. `(http.host in {"mercado.latam-tools.com.br" "mercado-vm.latam-tools.com.br"} and starts_with(http.request.uri.path, "/api/v1/"))`
-   → *Eligible for cache*; Edge TTL: *Use cache-control header if present, bypass cache if not*;
-   Browser TTL: *Respect origin*.
-2. Mesmos hosts e `starts_with(http.request.uri.path, "/assets/") or starts_with(http.request.uri.path, "/generated/")`
-   → *Eligible for cache*, respeitando a origem.
-3. Mesmos hosts e `http.request.uri.path in {"/mcp" "/healthz"}` → *Bypass cache*.
-
-O servidor já manda `cloudflare-cdn-cache-control` para a borda; sem a regra 1 a Cloudflare
+O servidor já manda `cloudflare-cdn-cache-control` para a borda; sem a regra a Cloudflare
 não guarda JSON e toda leitura chega à VM.
 
 ## 1. Conferir a VM antes de virar
@@ -104,8 +88,8 @@ poucos minutos, `[crawl] trading/FREYA: N itens publicados`.
 ## 6. Virar o domínio
 
 **Dashboard** — Workers & Pages → `latam-market` → Settings → Domains & Routes → remova
-`mercado.latam-tools.com.br`. Depois, no túnel, adicione o *Public Hostname*
-`mercado.latam-tools.com.br` → `HTTP` → `127.0.0.1:8788`.
+`mercado.latam-tools.com.br`. Depois, em Networking → Tunnels → `latam-market` → Routes,
+adicione a *Published application* `mercado.latam-tools.com.br` → `http://127.0.0.1:8788`.
 
 ## 7. Conferir
 
