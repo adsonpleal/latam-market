@@ -91,7 +91,8 @@ O `healthz` tem que mostrar `itensComOferta` na casa dos milhares nos dois servi
 ## 5. Coleta nova
 
 Push na `main` do **coletor** (a porta v2 está pronta lá). O deploy dele move o drop-in para
-a `latam-market` e reinicia a unit. No journal:
+a `latam-market` e reinicia a unit. Só faz isso porque o passo 2 desabilitou o shipper:
+enquanto ele estiver habilitado, o coletor fica nele. No journal:
 
 ```bash
 journalctl -u latam-market -f | grep -E '\[crawl\]|\[egress\]'
