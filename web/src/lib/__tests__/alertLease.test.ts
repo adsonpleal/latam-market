@@ -53,8 +53,8 @@ describe("claimLease", () => {
   /**
    * A regra que motivou a validade fixa.
    *
-   * O ciclo pode dormir meia hora entre coletas. Se a validade acompanhasse esse intervalo,
-   * fechar a aba dona travaria os alertas de todas as outras por quase uma hora.
+   * O ciclo pode dormir 10 minutos entre coletas. Se a validade acompanhasse esse intervalo,
+   * fechar a aba dona travaria os alertas de todas as outras por quase 20 minutos.
    */
   it("a validade não acompanha o intervalo de checagem", () => {
     claimLease(store, "aba-a", 0);

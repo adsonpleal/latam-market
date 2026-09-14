@@ -172,7 +172,7 @@ export function parseAlerts(raw: string | null): Alerts | null {
  *
  * Guardado porque só UMA aba roda o laço (ver `lib/alertLease.ts`). Sem isto, a segunda aba
  * mostraria uma tabela de travessões para sempre, e recarregar a página deixaria a tela
- * vazia até o próximo ciclo — que pode estar a meia hora de distância.
+ * vazia até o próximo ciclo — que pode estar a 10 minutos de distância.
  *
  * É cache de exibição, não fonte de verdade: quem decide alerta é sempre a resposta fresca
  * do ciclo. Daí guardar o `at`, para a tela poder dizer de quando é.

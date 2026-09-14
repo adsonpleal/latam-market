@@ -63,7 +63,8 @@ let scheduler: Scheduler | null = null;
 const app = createApp({
   db,
   staticFiles: staticHandler(config.staticDir),
-  nextRun: (dataset: Dataset, server: Server) => scheduler?.nextRun(dataset, server) ?? null,
+  // O pouso, não o disparo: a aba de alertas dorme até este número (ver `nextLanding`).
+  nextRun: (dataset: Dataset, server: Server) => scheduler?.nextLanding(dataset, server) ?? null,
   health: () => {
     const cache = getCache(DEFAULT_SERVER);
     return {

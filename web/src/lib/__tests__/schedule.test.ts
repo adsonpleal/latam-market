@@ -11,8 +11,8 @@ import { describe, expect, it } from "vitest";
 import { collectionDue, nextWaitMs } from "../schedule.js";
 
 const MIN = 60 * 1_000;
-const MAX = 30 * 60 * 1_000;
-const RETRY = 3 * 60 * 1_000;
+const MAX = 12 * 60 * 1_000;
+const RETRY = 60 * 1_000;
 const NOW = 1_700_000_000_000;
 
 const wait = (over: Partial<Parameters<typeof nextWaitMs>[0]> = {}) =>
@@ -26,12 +26,12 @@ describe("nextWaitMs", () => {
 
   it("o jitter só atrasa, para as abas não baterem todas no mesmo segundo", () => {
     const at = NOW / 1_000 + 600;
-    expect(wait({ nextTradingAt: at, jitter: 1 })).toBe(600_000 + 120_000);
-    expect(wait({ nextTradingAt: at, jitter: 0.5 })).toBe(600_000 + 60_000);
+    expect(wait({ nextTradingAt: at, jitter: 1 })).toBe(600_000 + 30_000);
+    expect(wait({ nextTradingAt: at, jitter: 0.5 })).toBe(600_000 + 15_000);
   });
 
   it("sem nunca ter havido coleta, espera um tempo fixo em vez de escolher no escuro", () => {
-    expect(wait({ nextTradingAt: null })).toBe(10 * 60_000);
+    expect(wait({ nextTradingAt: null })).toBe(5 * 60_000);
   });
 
   it("coleta que já deveria ter saído vira retentativa curta, não outra janela inteira", () => {
@@ -40,11 +40,11 @@ describe("nextWaitMs", () => {
 
   it("dado repetido encurta a espera em vez de esperar a coleta seguinte", () => {
     // Falta muito para a próxima, mas o retrato ainda é o antigo: a coleta atrasou.
-    expect(wait({ nextTradingAt: NOW / 1_000 + 1_500, stale: true })).toBe(RETRY);
+    expect(wait({ nextTradingAt: NOW / 1_000 + 500, stale: true })).toBe(RETRY);
   });
 
-  it("dado repetido não estica a espera quando a coleta está logo aí", () => {
-    expect(wait({ nextTradingAt: NOW / 1_000 + 90, stale: true })).toBe(90_000);
+  it("dado repetido nunca espera mais que a retentativa, nem com a coleta logo aí", () => {
+    expect(wait({ nextTradingAt: NOW / 1_000 + 90, stale: true })).toBe(RETRY);
   });
 
   it("nunca abaixo do piso do navegador", () => {

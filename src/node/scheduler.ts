@@ -18,7 +18,22 @@ export interface Scheduler {
   running(): { dataset: Dataset; server: Server } | null;
   /** Quando o próximo disparo está agendado, em epoch de segundos. */
   nextRun(dataset: Dataset, server: Server): number | null;
+  /**
+   * Quando o dado da próxima coleta deve estar publicado, em epoch de segundos.
+   *
+   * É o número que a aba de alertas usa para dormir. O início da coleta não serve: a
+   * coleta leva de 15 s a um minuto, e quem acorda no início lê o mercado anterior. A conta
+   * é "começa + a duração da última coleta deste dataset/servidor", com três casos:
+   * rodando agora (começou há pouco), esperando na fila (depois da que roda) e agendada.
+   */
+  nextLanding(dataset: Dataset, server: Server): number | null;
 }
+
+/** Duração presumida antes de haver uma coleta medida. */
+export const DEFAULT_CRAWL_MS = 60_000;
+
+/** Folga depois da duração medida: a última gravação e a publicação do relógio. */
+const LANDING_SLACK_MS = 10_000;
 
 export type CrawlJob = (dataset: Dataset, server: Server, deadlineMs: number) => Promise<void>;
 
@@ -47,6 +62,8 @@ export function startScheduler(job: CrawlJob): Scheduler {
   const nextRuns = new Map<string, number>();
   const pending: Array<{ dataset: Dataset; server: Server }> = [];
   let active: { dataset: Dataset; server: Server } | null = null;
+  let activeSince = 0;
+  const durations = new Map<string, number>();
   let stopped = false;
 
   const key = (dataset: Dataset, server: Server): string => `${dataset}:${server}`;
@@ -56,9 +73,11 @@ export function startScheduler(job: CrawlJob): Scheduler {
     const next = pending.shift();
     if (!next) return;
     active = next;
+    activeSince = Date.now();
     job(next.dataset, next.server, deadlineFor(next.dataset, next.server))
       .catch((err: unknown) => console.error(`[crawl] ${next.dataset}/${next.server} quebrou:`, err))
       .finally(() => {
+        durations.set(key(next.dataset, next.server), Date.now() - activeSince);
         active = null;
         pump();
       });
@@ -119,5 +138,28 @@ export function startScheduler(job: CrawlJob): Scheduler {
     },
     running: () => active,
     nextRun: (dataset, server) => nextRuns.get(key(dataset, server)) ?? null,
+    nextLanding(dataset, server) {
+      const k = key(dataset, server);
+      const took = (kk: string): number => (durations.get(kk) ?? DEFAULT_CRAWL_MS) + LANDING_SLACK_MS;
+      const now = Date.now();
+      // Nunca "já devia ter pousado": uma coleta mais lenta que a anterior ainda vai pousar,
+      // e um horário no passado faria o cliente tentar de novo em rajada.
+      const atLeastSoon = (ms: number): number => Math.round(Math.max(ms, now + LANDING_SLACK_MS) / 1000);
+
+      if (active && key(active.dataset, active.server) === k) return atLeastSoon(activeSince + took(k));
+
+      const queued = pending.findIndex((p) => key(p.dataset, p.server) === k);
+      if (queued >= 0) {
+        // Começa quando a atual e as que estão à frente na fila terminarem.
+        // A que roda pode já ter passado da duração presumida: ela termina "agora", não
+        // no passado.
+        let start = active ? Math.max(activeSince + took(key(active.dataset, active.server)), now) : now;
+        for (const p of pending.slice(0, queued)) start += took(key(p.dataset, p.server));
+        return atLeastSoon(start + took(k));
+      }
+
+      const scheduled = nextRuns.get(k);
+      return scheduled === undefined ? null : Math.round((scheduled * 1000 + took(k)) / 1000);
+    },
   };
 }

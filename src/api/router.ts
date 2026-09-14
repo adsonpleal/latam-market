@@ -158,7 +158,7 @@ function marketEtag(server: Server, url: URL): string {
 }
 
 /**
- * Quando a próxima coleta de anúncios pousa.
+ * Quando a próxima coleta de anúncios pousa — o dado publicado, não o início da coleta.
  *
  * Numa função só porque duas rotas publicam o mesmo número — `/prices` e `/ids`. Com a
  * conta escrita duas vezes, mudar a cadência acertaria uma e deixaria a outra mentindo.

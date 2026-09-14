@@ -44,11 +44,18 @@ export const NO_STORE: CachePolicy = { browser: 0, edge: 0 };
  * 300 s que o `freshness` impõe.
  */
 export const CACHE = {
-  /** Retrato do mercado: preço, oferta, busca, avaliação. Carrega `freshness`. */
+  /**
+   * Retrato do mercado: preço, oferta, busca, avaliação. Carrega `freshness`.
+   *
+   * `swr` curto de propósito. A aba de alertas acorda quando a coleta pousa e, se a coleta
+   * atrasou, tenta de novo um minuto depois com a MESMA URL. Com 300 s de
+   * stale-while-revalidate a borda devolvia a cópia de antes da coleta também na
+   * retentativa, e o alerta atrasava um ciclo inteiro.
+   */
   market: {
     browser: 30,
     edge: FRESHNESS_EDGE_MAX,
-    swr: 300,
+    swr: 30,
     staleIfError: 86_400,
   },
   /** Histórico por dia: só muda quando o rollup diário fecha. */

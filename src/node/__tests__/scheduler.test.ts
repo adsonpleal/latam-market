@@ -71,3 +71,60 @@ it("prazo: trading é o próprio período com teto de 9 min; market-price, 30 mi
   expect(deadlineFor("trading", "FREYA")).toBe(5 * 60_000);
   expect(deadlineFor("market-price", "FREYA")).toBe(30 * 60_000);
 });
+
+/**
+ * `nextLanding` é o `nextTradingAt` da API: a aba de alertas dorme até ele. Acordar no
+ * INÍCIO da coleta lia o mercado anterior e gastava uma retentativa por ciclo.
+ */
+it("pouso agendado: início previsto + duração presumida (sem coleta medida) + folga", async () => {
+  const scheduler = startScheduler(() => new Promise<void>(() => {}));
+  const start = scheduler.nextRun("trading", "FREYA")!;
+  // 60 s presumidos + 10 s de folga.
+  expect(scheduler.nextLanding("trading", "FREYA")).toBe(start + 70);
+  scheduler.stop();
+});
+
+it("pouso usa a duração medida da última coleta do mesmo dataset/servidor", async () => {
+  let release: () => void = () => {};
+  const scheduler = startScheduler(
+    () =>
+      new Promise<void>((resolve) => {
+        release = resolve;
+      }),
+  );
+  await vi.advanceTimersByTimeAsync(2 * 60_000 + 1); // FREYA começa
+  await vi.advanceTimersByTimeAsync(25_000); // e leva 25 s
+  release();
+  await vi.advanceTimersByTimeAsync(1);
+
+  const start = scheduler.nextRun("trading", "FREYA")!;
+  expect(scheduler.nextLanding("trading", "FREYA")).toBe(start + 35);
+  scheduler.stop();
+});
+
+it("pouso de coleta rodando: começou + duração, nunca no passado", async () => {
+  const scheduler = startScheduler(() => new Promise<void>(() => {}));
+  await vi.advanceTimersByTimeAsync(2 * 60_000 + 1); // FREYA começa e não termina
+  const startedSec = Math.round(Date.now() / 1000);
+  expect(scheduler.nextLanding("trading", "FREYA")).toBe(startedSec + 70);
+
+  // Passou da duração presumida e ainda roda: o pouso fica logo à frente, não no passado.
+  await vi.advanceTimersByTimeAsync(5 * 60_000);
+  const nowSec = Math.round(Date.now() / 1000);
+  expect(scheduler.nextLanding("trading", "FREYA")).toBe(nowSec + 10);
+  scheduler.stop();
+});
+
+it("pouso de coleta na fila: depois da que roda", async () => {
+  const scheduler = startScheduler(() => new Promise<void>(() => {}));
+  await vi.advanceTimersByTimeAsync(2 * 60_000 + 1); // FREYA começa e trava
+  const freyaStart = Math.round(Date.now() / 1000);
+  await vi.advanceTimersByTimeAsync(5 * 60_000 + 60_000); // NIDHOGG vence e entra na fila
+  expect(scheduler.running()).toEqual({ dataset: "trading", server: "FREYA" });
+  const nowSec = Math.round(Date.now() / 1000);
+  // A FREYA "já devia ter acabado" (70 s), então a NIDHOGG começa agora + 70 s dela.
+  const landing = scheduler.nextLanding("trading", "NIDHOGG")!;
+  expect(landing).toBeGreaterThanOrEqual(Math.max(freyaStart + 70, nowSec) + 70 - 1);
+  expect(landing).toBeLessThanOrEqual(nowSec + 80);
+  scheduler.stop();
+});

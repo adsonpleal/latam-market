@@ -142,14 +142,14 @@ export function NotifyBar({
             <strong>Quando checa</strong>
             <p className="footer-note">
               Não há o que configurar: os preços só mudam quando a coleta do projeto roda, a
-              cada 30 minutos, então a checagem acontece{" "}
+              cada 10 minutos, então a checagem acontece{" "}
               <strong>uma vez por coleta</strong> — logo depois de o dado novo chegar, cerca
-              de duas vezes por hora. Perguntar com mais frequência devolveria exatamente os
+              de seis vezes por hora. Perguntar com mais frequência devolveria exatamente os
               mesmos números.
               {nextTradingAt !== null && (
                 <>
                   {" "}
-                  Próxima coleta prevista <strong>{upcoming(nextTradingAt)}</strong>.
+                  Próximos preços previstos <strong>{upcoming(nextTradingAt)}</strong>.
                 </>
               )}
             </p>

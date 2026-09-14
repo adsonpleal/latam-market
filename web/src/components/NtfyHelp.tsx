@@ -45,7 +45,7 @@ export function NtfyHelp({ topicExample, onClose }: { topicExample: string; onCl
 
       <h4>De onde vêm os preços</h4>
       <p>
-        Os alertas leem a coleta deste projeto, que roda a cada 30 minutos, e não o site oficial —
+        Os alertas leem a coleta deste projeto, que roda a cada 10 minutos, e não o site oficial —
         então o seu navegador não corre risco de ser bloqueado por ele. Esta página checa{" "}
         <strong>uma vez por coleta</strong>, logo depois de o dado novo chegar: perguntar com mais
         frequência não traria preço mais novo.

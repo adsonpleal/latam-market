@@ -20,7 +20,7 @@
  *
  * Quase todo o estado que o ciclo lê vive em `ref`, e o efeito do timer depende de muito
  * pouco. Não é preciosismo: o ciclo grava `nextTradingAt`, e se isso entrasse nas
- * dependências o efeito remontaria a cada ciclo, zerando a espera — com meia hora de
+ * dependências o efeito remontaria a cada ciclo, zerando a espera — com 10 minutos de
  * intervalo, o laço nunca fecharia uma volta.
  */
 
@@ -75,7 +75,7 @@ export function useFavoriteWatch(server: Server): FavoriteWatch {
    *
    * Duas razões, as duas descobertas na tela: só uma aba roda o laço, então a segunda
    * mostraria travessões para sempre; e recarregar a página deixaria a tabela vazia até o
-   * próximo ciclo, que pode estar a meia hora. Guardado, a aba não-líder acompanha a líder
+   * próximo ciclo, que pode estar a 10 minutos. Guardado, a aba não-líder acompanha a líder
    * pelo evento do `usePersistent`, e um recarregamento pinta na hora.
    */
   const { value: snapshot, set: setSnapshot } = usePersistent<PricesSnapshot | null>(
@@ -183,7 +183,7 @@ export function useFavoriteWatch(server: Server): FavoriteWatch {
    * Completa os favoritos que o retrato ainda não cobre, sem esperar o ciclo.
    *
    * Favoritar não remonta o timer (ver logo abaixo), e faz bem em não remontar — mas até o
-   * próximo despertar, que pode estar a meia hora, a linha nova aparecia como `#25697` e
+   * próximo despertar, que pode estar a 10 minutos, a linha nova aparecia como `#25697` e
    * uma fileira de travessões, porque a tabela lê tudo do retrato. Recarregar a página
    * "consertava", que é como o problema chegava a quem usa.
    *
@@ -308,7 +308,7 @@ export function useFavoriteWatch(server: Server): FavoriteWatch {
       if (handle !== undefined) window.clearTimeout(handle);
     };
     // `server` entra para o mercado novo ser lido na hora, e não só no próximo ciclo — que
-    // com meia hora de espera deixaria a tela mostrando os preços do mercado anterior sem
+    // com 10 minutos de espera deixaria a tela mostrando os preços do mercado anterior sem
     // nenhum aviso de que trocaram.
   }, [hasFavorites, server, tick]);
 

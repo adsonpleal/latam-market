@@ -7,9 +7,9 @@
  * avisarem antes de qualquer uma gravar.
  *
  * **A validade do lease é curta e fixa, e NÃO derivada do intervalo de checagem.** Foi a
- * primeira tentativa e estava errada: um ciclo pode ficar meia hora dormindo entre uma
+ * primeira tentativa e estava errada: um ciclo pode ficar 10 minutos dormindo entre uma
  * coleta e a seguinte, então uma validade proporcional a ele significaria que uma aba
- * fechada travaria os alertas de todas as outras por quase uma hora. A aba dona reafirma o
+ * fechada travaria os alertas de todas as outras por quase 20 minutos. A aba dona reafirma o
  * lease num batimento curto, que não custa requisição nenhuma — assim "a dona está viva
  * mas dormindo" deixa de ser indistinguível de "a dona foi embora".
  *
