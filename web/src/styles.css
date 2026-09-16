@@ -372,10 +372,11 @@ main {
 
 /* --- filtros --------------------------------------------------------- */
 
-/* Os refinamentos são a SEGUNDA linha da mesma barra, então dividem o espaçamento dela: o
-   `flex-basis` é o que força a quebra, e é a única diferença entre as duas. */
-.filters,
 .filters {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
   margin-bottom: 12px;
 }
 
