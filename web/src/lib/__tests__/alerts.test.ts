@@ -9,7 +9,6 @@
 
 import { describe, expect, it } from "vitest";
 
-import type { ItemPrice } from "../../api/types.js";
 import {
   COALESCE_ABOVE,
   applyAlertPatch,
@@ -18,8 +17,10 @@ import {
   gapToTarget,
   planAlerts,
   type AlertNotification,
+  type CheckedItem,
 } from "../alerts.js";
-import { alertKey, parseAlertKey, type Alert } from "../persist.js";
+import type { MarketCheck } from "../market/checks.js";
+import { serverItemKey, parseServerItemKey, type Alert } from "../persist.js";
 
 const armed = (over: Partial<Alert> = {}): Alert => ({
   enabled: true,
@@ -39,8 +40,22 @@ const stepper = (initial: Alert) => {
   };
 };
 
-/** `tradingAt` de um servidor com coleta carregada. */
-const COLETADO = 1_700_000_000;
+const checkOf = (min: number | null, status: MarketCheck["status"] = min === null ? "empty" : "ok"): MarketCheck => ({
+  at: 1_800_000_000_000,
+  status,
+  min,
+  stores: min === null ? 0 : 1,
+  units: min === null ? 0 : 1,
+  seller: null,
+  truncated: false,
+  detail: null,
+});
+
+const priceOf = (itemId: number, min: number | null, name = `Item ${itemId}`): CheckedItem => ({
+  itemId,
+  name,
+  check: checkOf(min),
+});
 
 describe("evaluateAlert — queda (quero comprar)", () => {
   it("dispara quando o preço encosta no alvo", () => {
@@ -180,7 +195,7 @@ describe("evaluateAlert — à venda (quero a qualquer preço)", () => {
 
   it("o aviso diz que está à venda, sem falar de alvo", () => {
     const alerts = { "FREYA:501": available() };
-    const [aviso] = planAlerts("FREYA", alerts, new Set([501]), [priceOf(501, 900, "Poção")], COLETADO)
+    const [aviso] = planAlerts("FREYA", alerts, new Set([501]), [priceOf(501, 900, "Poção")])
       .notifications;
     expect(aviso?.title).toBe("À venda: Poção");
     expect(aviso?.body).not.toContain("alvo");
@@ -245,42 +260,32 @@ describe("applyAlertPatch", () => {
 
 describe("chave composta", () => {
   it("vai e volta", () => {
-    expect(parseAlertKey(alertKey("NIDHOGG", 501))).toEqual({ server: "NIDHOGG", itemId: 501 });
+    expect(parseServerItemKey(serverItemKey("NIDHOGG", 501))).toEqual({ server: "NIDHOGG", itemId: 501 });
   });
 
   it("recusa chave que não é um par servidor:item", () => {
     for (const bad of ["FREYA", "XPTO:501", "FREYA:0", "FREYA:-1", "FREYA:abc", "FREYA:501:2", ""]) {
-      expect(parseAlertKey(bad)).toBeNull();
+      expect(parseServerItemKey(bad)).toBeNull();
     }
   });
 });
-
-const priceOf = (itemId: number, min: number | null, name = `Item ${itemId}`): ItemPrice =>
-  ({
-    itemId,
-    name,
-    links: { dp: "dp", market: `market-${itemId}`, marketHistory: null },
-    offers: min === null ? null : { min, median: min, max: min, stores: 1, units: 1, at: 0 },
-    market: null,
-    cheapest: [],
-  }) as unknown as ItemPrice;
 
 describe("planAlerts", () => {
   const favorites = new Set([501, 502]);
 
   it("favorito sem alerta é ignorado", () => {
-    const plan = planAlerts("FREYA", {}, favorites, [priceOf(501, 10)], COLETADO);
+    const plan = planAlerts("FREYA", {}, favorites, [priceOf(501, 10)]);
     expect(plan).toEqual({ patches: [], notifications: [] });
   });
 
   it("alerta desligado é ignorado", () => {
     const alerts = { "FREYA:501": armed({ enabled: false }) };
-    expect(planAlerts("FREYA", alerts, favorites, [priceOf(501, 10)], COLETADO).notifications).toEqual([]);
+    expect(planAlerts("FREYA", alerts, favorites, [priceOf(501, 10)]).notifications).toEqual([]);
   });
 
   it("item desfavoritado é ignorado, mas o alerta continua existindo", () => {
     const alerts = { "FREYA:501": armed() };
-    const plan = planAlerts("FREYA", alerts, new Set<number>(), [priceOf(501, 10)], COLETADO);
+    const plan = planAlerts("FREYA", alerts, new Set<number>(), [priceOf(501, 10)]);
     expect(plan.notifications).toEqual([]);
     expect(plan.patches).toEqual([]);
     expect(alerts["FREYA:501"]).toBeDefined();
@@ -289,23 +294,33 @@ describe("planAlerts", () => {
   /** A prova da decisão de escopo: um alvo de FREYA não pode ser julgado em NIDHOGG. */
   it("alerta de outro servidor não vaza para o servidor ativo", () => {
     const alerts = { "FREYA:501": armed({ targetPrice: 1_000_000 }) };
-    expect(planAlerts("NIDHOGG", alerts, favorites, [priceOf(501, 10)], COLETADO).notifications).toEqual([]);
-    expect(planAlerts("FREYA", alerts, favorites, [priceOf(501, 10)], COLETADO).notifications).toHaveLength(1);
+    expect(planAlerts("NIDHOGG", alerts, favorites, [priceOf(501, 10)]).notifications).toEqual([]);
+    expect(planAlerts("FREYA", alerts, favorites, [priceOf(501, 10)]).notifications).toHaveLength(1);
   });
 
-  /** Servidor recém-subido: todo item vem sem oferta, e isso não é "sumiu das lojas". */
-  it("sem coleta carregada não decide nada, nem o rearme do aviso de 'à venda'", () => {
+  /** Página cortada ou erro: não é "sumiu das lojas", e não pode rearmar nem avisar. */
+  it("consulta inconclusiva não decide nada, nem o rearme do aviso de 'à venda'", () => {
     const alerts = {
       "FREYA:501": armed({ direction: "available", lastAlertedPrice: 900 }),
       "FREYA:502": armed(),
     };
-    expect(planAlerts("FREYA", alerts, favorites, [priceOf(501, null), priceOf(502, 10)], null))
-      .toEqual({ patches: [], notifications: [] });
+    const checked: CheckedItem[] = [
+      { itemId: 501, name: "A", check: checkOf(null, "incomplete") },
+      { itemId: 502, name: "B", check: checkOf(null, "error") },
+    ];
+    expect(planAlerts("FREYA", alerts, favorites, checked)).toEqual({ patches: [], notifications: [] });
+  });
+
+  it("consulta completa sem lojas rearma o aviso de 'à venda'", () => {
+    const alerts = { "FREYA:501": armed({ direction: "available", lastAlertedPrice: 900 }) };
+    expect(planAlerts("FREYA", alerts, favorites, [priceOf(501, null)]).patches).toEqual([
+      { key: "FREYA:501", patch: { lastAlertedPrice: null } },
+    ]);
   });
 
   it("item sem oferta nenhuma não gera patch nem aviso", () => {
     const alerts = { "FREYA:501": armed() };
-    expect(planAlerts("FREYA", alerts, favorites, [priceOf(501, null)], COLETADO)).toEqual({
+    expect(planAlerts("FREYA", alerts, favorites, [priceOf(501, null)])).toEqual({
       patches: [],
       notifications: [],
     });
@@ -313,7 +328,7 @@ describe("planAlerts", () => {
 
   it("dois itens disparando geram dois avisos e dois patches", () => {
     const alerts = { "FREYA:501": armed(), "FREYA:502": armed() };
-    const plan = planAlerts("FREYA", alerts, favorites, [priceOf(501, 10), priceOf(502, 20)], COLETADO);
+    const plan = planAlerts("FREYA", alerts, favorites, [priceOf(501, 10), priceOf(502, 20)]);
     expect(plan.notifications).toHaveLength(2);
     expect(plan.patches).toHaveLength(2);
   });
@@ -323,10 +338,11 @@ describe("planAlerts", () => {
     const [queda, alta] = planAlerts("FREYA", alerts, favorites, [
       priceOf(501, 900, "Poção"),
       priceOf(502, 20, "Elixir"),
-    ], COLETADO).notifications;
+    ]).notifications;
 
     expect(queda?.title).toBe("Preço baixou: Poção");
-    expect(queda?.click).toBe("market-501");
+    expect(queda?.click).toContain("ro.gnjoyamericas.com");
+    expect(queda?.click).toContain("searchWord=Po%C3%A7%C3%A3o");
     expect(queda?.body).toContain("FREYA");
     expect(alta?.title).toBe("Preço subiu: Elixir");
   });

@@ -1,51 +1,57 @@
 # Interface web
 
-SPA em React + Vite que consome a API deste mesmo repositório. Em produção o Caddy
-serve os arquivos estáticos na raiz de `mercado.latam-tools.com.br` e faz proxy de
-`/api/*`, `/mcp` e `/healthz` para o serviço Node — **mesma origem**, então não existe
-CORS nem URL base para configurar.
+SPA em React + Vite, e o site inteiro: não há backend. Em produção `web/dist` é publicado no
+Cloudflare Pages em `mercado.latam-tools.com.br` como arquivos estáticos — sem API, sem
+proxy, sem URL base para configurar.
+
+Três coisas que antes dependiam de servidor moram aqui:
+
+- **Preço.** Buscado no site oficial pelo navegador de quem usa. Os dois lados dessa
+  conversa são `src/bridge/` (o código que vira favorito e roda na aba do mercado) e
+  `src/lib/market/` (URL, parser, cota e quarentena). O cabeçalho de cada arquivo explica a
+  decisão que ele carrega; comece por `src/bridge/bridge.ts` e `src/lib/market/budget.ts`.
+- **Replay.** O `.rrf` é lido no navegador com o
+  [rrfparser](https://www.npmjs.com/package/rrfparser), em `src/lib/replay/`. O arquivo é
+  lido com a File API e nunca é enviado para lugar nenhum.
+- **Catálogo.** JSON estático gerado no build, baixado sob demanda (abaixo).
+
+> **"bridge" no código, "conexão" na tela.** Os nomes do código (`src/bridge/`, `BridgeClient`,
+> `BridgeInstall`) são de antes de a interface trocar a palavra; na tela, e nos textos para quem
+> usa, é sempre "conexão". O script de build do catálogo é `.mjs`, mas roda com `tsx`: ele
+> importa a classificação de itens direto de `src/lib/catalogue/taxonomy.ts`.
 
 ## Rodando local
 
 ```bash
 pnpm install            # na raiz; web/ é membro do workspace
-pnpm start              # o backend, na 8788
-pnpm --filter web dev   # a interface, na 5173
+pnpm --filter web dev   # http://localhost:5173
 ```
 
-> **Aponte o proxy para o backend LOCAL, não para produção.**
->
-> `src/server/config.ts` traz `http://localhost:5173` no `ALLOWED_ORIGINS` padrão, mas
-> `infra/latam-market.service` sobrescreve a variável em produção com apenas
-> `https://claude.ai,https://mercado.latam-tools.com.br`. O proxy do Vite repassa o
-> cabeçalho `Origin` intacto (`changeOrigin` mexe no `Host`, não nele), então apontar
-> para produção devolve `403 origem não autorizada` em toda requisição.
-
-Sem um `.rrf` à mão, o fixture versionado serve:
-
-```bash
-curl -s --data-binary @src/replay/__tests__/fixtures/equip-test-2.rrf -X POST http://127.0.0.1:8788/api/v1/replay
-```
+É só isso: o `predev` gera o catálogo e o Vite serve o resto. Para ver o build como vai
+para produção, `pnpm --filter web build && pnpm --filter web preview`.
 
 ## Catálogo
 
 `scripts/build-catalogue.mjs` roda antes de `dev`, `build`, `test` e `typecheck`. Ele lê
-`../data/latam-items.json` (6,6 MB) e gera, em `public/generated/` e `src/generated/`:
+`../data/latam-items.json` e gera, em `public/generated/` e `src/generated/`:
 
-| Arquivo | Conteúdo | Tamanho |
-|---|---|---|
-| `descriptions.<hash>.json` | `{ "<id>": "<descrição pt-BR>" }` | 5,4 MB → 489 KB brotli |
-| `untradable.<hash>.json` | ids intransferíveis | 7 KB |
-| `src/generated/catalogue.ts` | as URLs, com o hash | — |
+| Arquivo | Conteúdo |
+|---|---|
+| `items.<hash>.json` | id, nome, slots, tipo e onde equipa — o que a busca, os favoritos e o replay usam |
+| `descriptions.<hash>.json` | `{ "<id>": "<descrição pt-BR>" }` — o maior dos três |
+| `untradable.<hash>.json` | ids intransferíveis |
+| `src/generated/catalogue.ts` | as URLs, com o hash |
 
-Os dois diretórios são gerados e estão no `.gitignore`. O hash no nome é o que permite
-`Cache-Control: immutable`.
+Nenhum dos JSON entra no bundle: a página os baixa sob demanda, na primeira vez que precisa
+(uma busca, um replay, uma descrição aberta), e o navegador guarda. Os dois diretórios são
+gerados e estão no `.gitignore`. O hash no nome é o que permite o
+`Cache-Control: immutable` que `public/_headers` aplica a `/generated/*`.
 
 ### Por que "intransferível" sai da descrição, e não do GRF
 
 O `data/itemmoveinfov5.txt` de dentro do `data.grf` tem uma coluna `Trade`, que parece a
 fonte certa e não é: ela é herdada do cliente coreano e não descreve as regras deste
-servidor. Medido contra os 5.460 itens que o coletor já viu à venda:
+servidor. Medido, enquanto a coleta existia, contra os 5.460 itens já vistos à venda:
 
 | Sinal | Marca | Destes, à venda agora |
 |---|---|---|
@@ -57,16 +63,12 @@ servidor. Medido contra os 5.460 itens que o coletor já viu à venda:
 Ou seja: a coluna do GRF é pior que chutar. A regra final está em
 `scripts/catalogue-rules.mjs`, com teste em `src/lib/__tests__/untradable.test.ts`.
 
-## Tipos
-
-`src/api/types.ts` é o único arquivo que alcança `../src/`, e só por `import type`. Um
-arquivo espelho divergiria calado; assim o `tsc --noEmit` daqui quebra junto com o
-backend. `src/__tests__/layering.test.ts` (na raiz) garante que nenhum import de valor
-atravesse — se atravessasse, o Vite tentaria empacotar `node:sqlite`.
-
 ## Deploy
 
-`.github/workflows/web-deploy.yml`, disparado por mudanças em `web/**` e no catálogo.
-Manda o `dist/` para `/opt/latam-market-web` e **não** recarrega o Caddy — arquivo
-estático não é configuração. A verificação final bate na API, no MCP e no `/healthz`
-depois de publicar: é o teste de regressão da ordem dos `handle` no Caddy.
+Não tem workflow próprio: `.github/workflows/deploy.yml`, na raiz, roda typecheck, testes e
+`pnpm --filter web build`, confere o `dist` e publica com `wrangler pages deploy` no projeto
+`latam-market` do Cloudflare Pages. Um push na `main` publica.
+
+Duas coisas do `dist` que o Pages lê por convenção: `_headers` (vem de `public/`, define o
+cache) e a **ausência** de `404.html` — sem ele o Pages serve o `index.html` para qualquer
+rota desconhecida, e é isso que faz `/favoritos` abrir direto pelo link.

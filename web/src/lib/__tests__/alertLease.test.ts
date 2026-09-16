@@ -9,7 +9,7 @@
 
 import { beforeEach, describe, expect, it } from "vitest";
 
-import { LEASE_HEARTBEAT_MS, LEASE_TTL_MS, claimLease } from "../alertLease.js";
+import { LEASE_TTL_MS, claimLease } from "../alertLease.js";
 import { ALERTS_LEASE_KEY } from "../persist.js";
 
 /** `localStorage` de mentira, para não depender do jsdom nem de limpeza entre testes. */
@@ -63,10 +63,8 @@ describe("claimLease", () => {
     expect(LEASE_TTL_MS).toBeLessThan(meiaHora);
   });
 
-  /** O batimento tem que caber na validade com folga, inclusive estrangulado a 1/min. */
-  it("o batimento é bem menor que a validade", () => {
-    expect(LEASE_HEARTBEAT_MS).toBeLessThan(LEASE_TTL_MS);
-    // Aba de fundo bate cerca de uma vez por minuto; ainda tem de renovar em tempo.
+  /** O laço reafirma a cada 15 s; estrangulado em aba de fundo, cerca de uma vez por minuto. */
+  it("a validade cabe o tique do laço mesmo estrangulado", () => {
     expect(60_000).toBeLessThan(LEASE_TTL_MS);
   });
 

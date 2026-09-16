@@ -1,27 +1,35 @@
 /**
  * O que a aba Favoritos guarda no navegador, e como ler isso sem confiar.
  *
- * Nada disto vai para o servidor: os alvos de preço e o tópico do ntfy são da pessoa, e
- * mantê-los aqui é o que faz o EC2 não ter estado de usuário nenhum. O preço é que tudo
+ * Não há servidor para onde isto iria: os alvos de preço e o tópico do ntfy são da pessoa e
+ * ficam neste navegador. O preço é que tudo
  * pode chegar corrompido — outra versão do app, uma edição à mão no devtools, um
  * `localStorage` cheio pela metade. Por isso os parsers deste arquivo **nunca lançam** e
  * descartam entrada ruim *item por item*: um registro estragado não pode apagar a lista
  * inteira.
  *
- * As chaves seguem `latam-market:<coisa>`, como as duas que já existiam
- * (`latam-market:server` em `api/client.ts` e `latam-market:columns` em `ItemsTable.tsx`).
+ * As chaves seguem `latam-market:<coisa>` e moram todas aqui, menos `latam-market:server`,
+ * que `lib/server.ts` lê antes de qualquer componente montar.
  */
 
-import { SERVERS, type Server } from "../api/client.js";
-import type { Freshness, ItemPrice } from "../api/types.js";
+import { SERVERS, type Server } from "./server.js";
+import { DEFAULT_INTERVAL_MIN, INTERVAL_OPTIONS } from "./market/budget.js";
 
 export const FAVORITES_KEY = "latam-market:favorites";
 export const ALERTS_KEY = "latam-market:alerts";
 export const ALERTS_CONFIG_KEY = "latam-market:alerts-config";
 export const ALERTS_LEASE_KEY = "latam-market:alerts-lease";
 export const FAVORITES_COLUMNS_KEY = "latam-market:columns-favorites";
-export const SEARCH_COLUMNS_KEY = "latam-market:columns-mercado";
-export const PRICES_SNAPSHOT_KEY = "latam-market:prices-snapshot";
+export const INVENTORY_COLUMNS_KEY = "latam-market:columns";
+/** O que cada consulta ao site achou, por `servidor:item`. Ver `market/checks.ts`. */
+export const MARKET_CHECKS_KEY = "latam-market:market-checks";
+/**
+ * A cota e a quarentena, juntas: as duas mudam na mesma requisição e são lidas juntas antes
+ * da próxima. Ver `market/budget.ts` e `market/quarantine.ts`.
+ */
+export const MARKET_GUARD_KEY = "latam-market:market-guard";
+/** As últimas consultas, para a tela mostrar o que saiu do computador da pessoa. */
+export const MARKET_LOG_KEY = "latam-market:market-log";
 
 /**
  * Identidade desta aba, para o lease dos alertas.
@@ -77,36 +85,48 @@ export interface Alert {
  * Alertas por `servidor:item` — a chave composta é deliberada.
  *
  * FREYA e NIDHOGG cotam o mesmo id por preços muito diferentes, então um alvo em zeny só
- * significa algo junto do servidor. É o mesmo cuidado que `core/movers.ts` toma na chave da
- * sua memo. A lista de favoritos, ao contrário, é compartilhada: o item é o mesmo objeto do
- * jogo nos dois mercados.
+ * significa algo junto do servidor. A lista de favoritos, ao contrário, é compartilhada: o
+ * item é o mesmo objeto do jogo nos dois mercados.
  */
 export type Alerts = Record<string, Alert>;
 
-/** Sem intervalo de checagem de propósito: quem decide a cadência é `lib/schedule.ts`. */
 export interface AlertsConfig {
   ntfyEnabled: boolean;
   ntfyTopic: string;
+  /**
+   * De quantos em quantos minutos checar os itens com alerta.
+   *
+   * Voltou a ser configurável quando a consulta passou a sair do IP da pessoa: é ela quem
+   * paga a cota do site, então é ela quem escolhe entre frequência e quantidade de itens.
+   */
+  intervalMin: number;
 }
 
 /** Qual aba está tocando o laço. Ver `lib/alertLease.ts`. */
 export interface AlertsLease {
   tabId: string;
-  /** Epoch em MILISSEGUNDOS: é comparado com `Date.now()`, não com dado do backend. */
+  /** Epoch em MILISSEGUNDOS: é comparado com `Date.now()`. */
   at: number;
 }
 
 export const DEFAULT_ALERTS_CONFIG: AlertsConfig = {
   ntfyEnabled: false,
   ntfyTopic: "",
+  intervalMin: DEFAULT_INTERVAL_MIN,
 };
 
 const isServer = (value: string): value is Server => SERVERS.some((s) => s === value);
 
-/** `FREYA:501`. */
-export const alertKey = (server: Server, itemId: number): string => `${server}:${itemId}`;
+/**
+ * `FREYA:501` — a identidade de um item NUM mercado.
+ *
+ * Chaveia os alertas e também as consultas guardadas (`MARKET_CHECKS_KEY`): as duas coisas
+ * são por servidor pelo mesmo motivo, que FREYA e NIDHOGG cotam o mesmo id por preços muito
+ * diferentes.
+ */
+export const serverItemKey = (server: Server, itemId: number): string => `${server}:${itemId}`;
 
-export function parseAlertKey(key: string): { server: Server; itemId: number } | null {
+export function parseServerItemKey(key: string): { server: Server; itemId: number } | null {
   const parts = key.split(":");
   if (parts.length !== 2) return null;
   const [server, raw] = parts as [string, string];
@@ -118,14 +138,6 @@ export function parseAlertKey(key: string): { server: Server; itemId: number } |
 
 const isItemId = (value: unknown): value is number =>
   typeof value === "number" && Number.isInteger(value) && value > 0;
-
-/** Texto digitado → id de item, ou `null`. O campo "colar um ID" é o único que precisa. */
-export const parseItemId = (raw: string): number | null => {
-  const trimmed = raw.trim();
-  if (trimmed === "") return null;
-  const n = Number(trimmed);
-  return isItemId(n) ? n : null;
-};
 
 /**
  * Lista de favoritos. `null` significa "não deu, use o padrão".
@@ -147,7 +159,7 @@ export function parseAlerts(raw: string | null): Alerts | null {
   for (const [key, value] of Object.entries(parsed)) {
     // Chave estranha é descartada, não consertada: adivinhar a que servidor um alerta
     // pertence poderia avaliá-lo contra o mercado errado.
-    if (parseAlertKey(key) === null || !isRecord(value)) continue;
+    if (parseServerItemKey(key) === null || !isRecord(value)) continue;
 
     const { enabled, direction, targetPrice, lastAlertedPrice } = value;
     const validTarget =
@@ -165,40 +177,6 @@ export function parseAlerts(raw: string | null): Alerts | null {
     };
   }
   return out;
-}
-
-/**
- * O último retrato de preços que o laço leu.
- *
- * Guardado porque só UMA aba roda o laço (ver `lib/alertLease.ts`). Sem isto, a segunda aba
- * mostraria uma tabela de travessões para sempre, e recarregar a página deixaria a tela
- * vazia até o próximo ciclo — que pode estar a 10 minutos de distância.
- *
- * É cache de exibição, não fonte de verdade: quem decide alerta é sempre a resposta fresca
- * do ciclo. Daí guardar o `at`, para a tela poder dizer de quando é.
- */
-export interface PricesSnapshot {
-  at: number;
-  prices: ItemPrice[];
-  missing: number[];
-  freshness: Freshness | null;
-  nextTradingAt: number | null;
-}
-
-export function parsePricesSnapshot(raw: string | null): PricesSnapshot | null {
-  const parsed = safeJson(raw);
-  if (!isRecord(parsed)) return null;
-  const { at, prices, missing, freshness, nextTradingAt } = parsed;
-  if (typeof at !== "number" || !Array.isArray(prices)) return null;
-  return {
-    at,
-    // Entrada sem id utilizável não serve para casar com favorito nenhum.
-    prices: prices.filter((p): p is ItemPrice => isRecord(p) && isItemId(p["itemId"])),
-    missing: Array.isArray(missing) ? missing.filter(isItemId) : [],
-    freshness: isRecord(freshness) ? (freshness as unknown as Freshness) : null,
-    nextTradingAt:
-      typeof nextTradingAt === "number" && Number.isFinite(nextTradingAt) ? nextTradingAt : null,
-  };
 }
 
 /**
@@ -221,15 +199,18 @@ export function parseAlertsConfig(raw: string | null): AlertsConfig | null {
   const parsed = safeJson(raw);
   if (!isRecord(parsed)) return null;
 
-  // Um `intervalSec` de uma versão anterior é simplesmente ignorado.
-  const { ntfyEnabled, ntfyTopic } = parsed;
+  // Um `intervalSec` de uma versão anterior é simplesmente ignorado. Um intervalo fora das
+  // opções da tela volta ao padrão: um "1" escrito à mão no devtools não pode virar uma
+  // consulta por minuto.
+  const { ntfyEnabled, ntfyTopic, intervalMin } = parsed;
   return {
     ntfyEnabled: ntfyEnabled === true,
     ntfyTopic: typeof ntfyTopic === "string" ? ntfyTopic : "",
+    intervalMin: INTERVAL_OPTIONS.find((o) => o === intervalMin) ?? DEFAULT_INTERVAL_MIN,
   };
 }
 
-function safeJson(raw: string | null): unknown {
+export function safeJson(raw: string | null): unknown {
   if (raw === null) return null;
   try {
     return JSON.parse(raw);
@@ -238,5 +219,9 @@ function safeJson(raw: string | null): unknown {
   }
 }
 
-const isRecord = (value: unknown): value is Record<string, unknown> =>
+export const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
+
+/** Número utilizável, ou `null`. `NaN` e `Infinity` contam como ausência. */
+export const finiteNumber = (value: unknown): number | null =>
+  typeof value === "number" && Number.isFinite(value) ? value : null;

@@ -1,9 +1,7 @@
 import { defineConfig } from "vitest/config";
 
 /**
- * Config própria, separada da raiz: o `fileParallelism: false` de lá existe por causa
- * do cache de mercado ser um singleton de módulo no servidor, o que não vale aqui.
- * A raiz também não enxerga estes testes — o `include` dela é ancorado em `src/**`.
+ * A suíte da aplicação. A raiz tem outra, só para os scripts de `tools/`.
  */
 export default defineConfig({
   test: {

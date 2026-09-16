@@ -1,363 +1,518 @@
 /**
- * O laço que vigia os favoritos e dispara os alertas.
+ * O laço que consulta o site oficial pelos favoritos e dispara os alertas.
  *
  * **Mora no `App`, não na página `Favoritos`.** O react-router desmonta o elemento da rota
- * ao navegar, então na página o timer morreria ao trocar de aba interna — e alerta que só
- * funciona enquanto se está olhando para ele não serve para nada. É o mesmo motivo pelo
- * qual `useReplay` já vive no `App`.
+ * ao navegar, então na página o laço morreria ao trocar de aba interna — e alerta que só
+ * funciona enquanto se está olhando para ele não serve para nada.
  *
- * **É o único dono do fetch de preços.** A página não busca nada: lê `prices` daqui. Com as
- * duas coisas buscando, a tabela poderia mostrar um retrato diferente daquele que decidiu o
- * alerta — divergência invisível, o pior tipo.
+ * **Toda consulta sai do computador da pessoa**, pela conexão na aba do mercado (ver
+ * `bridge/bridge.ts`). Por isso tudo passa por uma fila só, uma requisição por vez: a cota
+ * (`lib/market/budget.ts`) decide QUANDO a próxima pode sair e a quarentena
+ * (`lib/market/quarantine.ts`) decide SE pode. O ciclo automático e o botão "Consultar" de
+ * uma linha entram na mesma fila, e o botão não fura a cota — só fura a fila.
  *
- * São dois caminhos de escrita no retrato, e só um decide alerta: o ciclo, que lê a lista
- * inteira e passa pelo `planAlerts`; e o preenchimento, que só completa favorito que o
- * retrato ainda não cobre. Um alerta de item recém-preenchido é avaliado no ciclo seguinte,
- * como já era antes de o preenchimento existir.
+ * **O que o ciclo consulta:** os favoritos com alerta ligado no servidor ativo, a cada
+ * `intervalMin`. Favorito sem alerta não gasta requisição sozinho; a linha dele fica com a
+ * última consulta e um botão para consultar na hora.
  *
- * `setTimeout` em cadeia em vez de `setInterval`, porque a espera muda a cada ciclo: o
- * servidor conta quando é a próxima coleta e a aba dorme até lá (ver `lib/schedule.ts`).
+ * **Quem roda o ciclo:** a aba que tem a conexão ativa e o lease (`lib/alertLease.ts`). A
+ * cota, a quarentena e a hora do último ciclo vivem no `localStorage`, compartilhadas: uma
+ * segunda aba, ou um recarregamento, não recomeçam a conta.
  *
- * Quase todo o estado que o ciclo lê vive em `ref`, e o efeito do timer depende de muito
- * pouco. Não é preciosismo: o ciclo grava `nextTradingAt`, e se isso entrasse nas
- * dependências o efeito remontaria a cada ciclo, zerando a espera — com 10 minutos de
- * intervalo, o laço nunca fecharia uma volta.
+ * O relógio é o do worker (`lib/market/ticker.ts`), porque timer de aba em segundo plano é
+ * estrangulado — e o laço passa a maior parte da vida em segundo plano. Este hook **não**
+ * re-renderiza por tempo: quem mostra idade assina o relógio de `useNow`, para o tique não
+ * arrastar a árvore inteira (a tabela do inventário inclusive) a cada volta.
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-import { batchPrices, messageOf, type Server } from "../api/client.js";
-import type { Freshness, ItemPrice } from "../api/types.js";
-import { LEASE_HEARTBEAT_MS, claimLease } from "../lib/alertLease.js";
-import { coalesce, planAlerts, type AlertNotification } from "../lib/alerts.js";
+import { loadItems, loadedItems, type ItemIndex } from "../lib/catalogue/catalogue.js";
+import type { Server } from "../lib/server.js";
+import { claimLease } from "../lib/alertLease.js";
+import { coalesce, planAlerts, type AlertNotification, type CheckedItem } from "../lib/alerts.js";
+import { time } from "../lib/format.js";
+import { WINDOW_CAP, nextSlot, prune, usedInWindow } from "../lib/market/budget.js";
+import {
+  LOG_SIZE,
+  barrenCheck,
+  interpret,
+  keepFavorites,
+  parseChecks,
+  parseLog,
+  truncatedItems,
+  type MarketCheck,
+  type RequestLogEntry,
+} from "../lib/market/checks.js";
+import {
+  EMPTY_QUARANTINE,
+  activePause,
+  clearChallenge,
+  parseQuarantine,
+  record,
+  type Outcome,
+  type Pause,
+  type PauseKind,
+  type Quarantine,
+} from "../lib/market/quarantine.js";
+import { ticker } from "../lib/market/ticker.js";
+import { planQueries, type QueryJob } from "../lib/market/plan.js";
+import { checkUrlForTerm } from "../lib/market/url.js";
 import { sendNtfy } from "../lib/ntfy.js";
 import {
-  PRICES_SNAPSHOT_KEY,
-  parsePricesSnapshot,
+  MARKET_CHECKS_KEY,
+  MARKET_GUARD_KEY,
+  MARKET_LOG_KEY,
+  finiteNumber,
+  isRecord,
+  safeJson,
+  serverItemKey,
   tabId as readTabId,
-  type PricesSnapshot,
 } from "../lib/persist.js";
-import { collectionDue, nextWaitMs } from "../lib/schedule.js";
 import { useAlerts, type AlertsApi } from "./useAlerts.js";
 import { useAlertsConfig, type AlertsConfigApi } from "./useAlertsConfig.js";
+import { bridgeClient, useBridge, type BridgeApi } from "./useBridge.js";
 import { useFavorites, type FavoritesApi } from "./useFavorites.js";
+import { useItemIndex } from "./useItemIndex.js";
 import { usePersistent } from "./usePersistent.js";
+
+/** A cota, a quarentena e a hora do último ciclo — o que precisa valer entre abas. */
+interface Guard {
+  starts: number[];
+  quarantine: Quarantine;
+  lastCycleAt: number | null;
+}
+
+const EMPTY_GUARD: Guard = { starts: [], quarantine: EMPTY_QUARANTINE, lastCycleAt: null };
+
+function parseGuard(raw: string | null): Guard | null {
+  const g = safeJson(raw);
+  if (!isRecord(g)) return null;
+  return {
+    starts: Array.isArray(g["starts"]) ? g["starts"].filter((t): t is number => finiteNumber(t) !== null) : [],
+    quarantine: parseQuarantine(g["quarantine"]),
+    lastCycleAt: finiteNumber(g["lastCycleAt"]),
+  };
+}
+
+const EMPTY_CHECKS: Record<string, MarketCheck> = {};
+const EMPTY_LOG: RequestLogEntry[] = [];
+const parseChecksRaw = (raw: string | null) => (raw === null ? null : parseChecks(safeJson(raw)));
+const parseLogRaw = (raw: string | null) => (raw === null ? null : parseLog(safeJson(raw)));
+
+/** De quanto em quanto tempo o laço confere se é hora de um ciclo. */
+const TICK_MS = 15_000;
+
+/**
+ * O texto de cada tipo de pausa, por audiência: o selo na aba do mercado e o push.
+ *
+ * Um `Record` e não ternários espalhados — com um tipo novo de recusa, o compilador aponta
+ * cada texto que falta, em vez de o novo cair calado na redação de outro. É a mesma decisão
+ * do `WORDING` em `lib/alerts.ts`. A faixa na tela tem texto próprio, com as instruções, em
+ * `components/PauseBanner.tsx`.
+ */
+const PAUSE_WORDING: Record<
+  PauseKind,
+  { level: "warn" | "error"; badge: (p: Pause) => string; push: (p: Pause) => string }
+> = {
+  blocked: {
+    level: "error",
+    badge: (p) => `Bloqueado pelo site (429). Pausado até ${time(p.until!)}.`,
+    push: (p) => `O site do mercado bloqueou seu IP (429). Nova tentativa às ${time(p.until!)}.`,
+  },
+  challenge: {
+    level: "error",
+    badge: () => "O site pediu verificação. Recarregue esta aba e clique no favorito.",
+    push: () =>
+      "O site pediu a verificação do Cloudflare. Abra a aba do mercado, resolva e clique no favorito Conectar latam-market.",
+  },
+  soft: {
+    level: "warn",
+    badge: (p) => `Respostas sem a lista. Pausado até ${time(p.until!)}.`,
+    push: (p) => `O site respondeu sem a lista de anúncios. Nova tentativa às ${time(p.until!)}.`,
+  },
+};
 
 export interface FavoriteWatch {
   favorites: FavoritesApi;
   alerts: AlertsApi;
   notify: AlertsConfigApi;
-  /** Preço de cada favorito, do último ciclo. */
-  prices: Map<number, ItemPrice>;
-  /** Ids favoritados que o catálogo não conhece. */
-  missing: number[];
-  freshness: Freshness | null;
-  /** Epoch em segundos da próxima coleta, quando o servidor sabe. Só para exibição. */
-  nextTradingAt: number | null;
-  /** Epoch em ms do último ciclo concluído. */
-  lastRun: number | null;
-  running: boolean;
-  error: string | null;
-  /** O que disparou desde a última baixa. Alimenta a faixa na tela e o contador na nav. */
+  bridge: BridgeApi;
+  /** O catálogo, para nomear as linhas. `null` enquanto não chegou. */
+  index: ItemIndex | null;
+  /** A última consulta de um item neste servidor. */
+  checkOf: (itemId: number) => MarketCheck | undefined;
+  /**
+   * O estado do site, cru.
+   *
+   * Cru porque "está pausado?" e "quanto já gastei?" dependem da HORA, e quem mostra isso
+   * assina o relógio de `useNow` — ler aqui congelaria o número até a próxima mudança de
+   * estado. Use `activePause` e `usedInWindow` sobre estes dois.
+   */
+  quarantine: Quarantine;
+  starts: number[];
+  /** Favoritos com alerta ligado neste servidor — o que cada ciclo consulta. */
+  targets: number[];
+  /** Quantas requisições um ciclo dos alertas custa, agrupado. Um por item até o catálogo chegar. */
+  cycleRequests: number;
+  /** Quantas requisições "atualizar todos" custa, agrupado. */
+  allRequests: number;
+  /** Itens na fila, na ordem em que vão sair. */
+  queue: number[];
+  /** Quantas requisições ainda estão na fila (cada uma pode cobrir vários itens). */
+  queuedRequests: number;
+  /** Itens da requisição em voo. */
+  current: number[];
+  lastCycleAt: number | null;
+  log: RequestLogEntry[];
   fired: AlertNotification[];
   dismissFired: () => void;
-  /** Ação explícita: ignora o lease e a espera. */
+  /** Consulta agora todos os itens com alerta, pela fila (a cota continua valendo). */
   checkNow: () => void;
+  /** Consulta agora TODOS os favoritos deste servidor, com ou sem alerta. */
+  checkAll: () => void;
+  /** Consulta um item, na frente da fila. */
+  checkItem: (itemId: number) => void;
+  /** Esvazia a fila. A consulta em voo termina. */
+  cancel: () => void;
+  /** Tira a pausa de desafio, depois de a pessoa resolver a verificação no site. */
+  retryChallenge: () => void;
 }
 
 export function useFavoriteWatch(server: Server): FavoriteWatch {
   const favorites = useFavorites();
   const alerts = useAlerts();
   const notify = useAlertsConfig();
+  const bridge = useBridge();
+  const { index } = useItemIndex();
 
-  /**
-   * O retrato de preços vive no `localStorage`, não só em memória.
-   *
-   * Duas razões, as duas descobertas na tela: só uma aba roda o laço, então a segunda
-   * mostraria travessões para sempre; e recarregar a página deixaria a tabela vazia até o
-   * próximo ciclo, que pode estar a 10 minutos. Guardado, a aba não-líder acompanha a líder
-   * pelo evento do `usePersistent`, e um recarregamento pinta na hora.
-   */
-  const { value: snapshot, set: setSnapshot } = usePersistent<PricesSnapshot | null>(
-    PRICES_SNAPSHOT_KEY,
-    null,
-    parsePricesSnapshot,
+  const { value: checks, set: setChecks, peek: peekChecks } = usePersistent(
+    MARKET_CHECKS_KEY,
+    EMPTY_CHECKS,
+    parseChecksRaw,
   );
+  // `peek` porque o laço decide o passo seguinte a partir do que acabou de gravar: a cota
+  // lida em `guard` ainda não teria a requisição que ele mandou meio milissegundo atrás.
+  const { value: guard, set: setGuard, peek: peekGuard } = usePersistent(MARKET_GUARD_KEY, EMPTY_GUARD, parseGuard);
+  const { value: log, set: setLog } = usePersistent(MARKET_LOG_KEY, EMPTY_LOG, parseLogRaw);
 
-  const [lastRun, setLastRun] = useState<number | null>(null);
-  const [running, setRunning] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [queue, setQueue] = useState<QueryJob[]>([]);
+  const [current, setCurrent] = useState<number[]>([]);
   const [fired, setFired] = useState<AlertNotification[]>([]);
 
-  const prices = useMemo(
-    () => new Map(snapshot?.prices.map((p) => [p.itemId, p]) ?? []),
-    [snapshot],
-  );
-  const missing = snapshot?.missing ?? [];
-  const freshness = snapshot?.freshness ?? null;
-  const nextTradingAt = snapshot?.nextTradingAt ?? null;
-
-  /** Identidade desta aba, estável entre recarregamentos (ver `persist.tabId`). */
   const tabId = useRef<string>("");
   if (tabId.current === "") tabId.current = readTabId();
 
-  /** Tudo o que o ciclo lê, sempre na versão mais recente e sem virar dependência. */
-  const deps = useRef({ server, favorites, alerts, notify });
-  deps.current = { server, favorites, alerts, notify };
+  const targets = useMemo(
+    () => favorites.ids.filter((id) => alerts.get(server, id)?.enabled === true),
+    [favorites.ids, alerts.get, server],
+  );
 
-  const nextAtRef = useRef<number | null>(null);
-  /** O `tradingAt` do ciclo anterior, para saber se a coleta pousou. */
-  const lastTradingAt = useRef<number | null>(null);
-  const runningRef = useRef(false);
-  /** Ids com preenchimento em voo, para dois cliques seguidos não repetirem o primeiro. */
-  const asking = useRef<Set<number>>(new Set());
+  /**
+   * Tudo o que o laço lê, sempre na versão mais recente e sem virar dependência.
+   *
+   * A ponte fica de fora: `bridgeClient()` é o mesmo objeto por toda a vida da página.
+   */
+  const deps = useRef({ server, favorites, alerts, notify, targets });
+  deps.current = { server, favorites, alerts, notify, targets };
 
-  /** Devolve `true` quando o retrato lido era o mesmo do ciclo anterior. */
-  const tick = useCallback(async (reason: "timer" | "manual" | "visible"): Promise<boolean> => {
-    const { server, favorites, alerts, notify } = deps.current;
-    const ids = favorites.ids;
-    if (ids.length === 0) return false;
+  const queueRef = useRef<QueryJob[]>([]);
+  const pumping = useRef(false);
+  const syncQueue = () => setQueue([...queueRef.current]);
 
-    // Ciclos não se sobrepõem: um manual em cima de um do timer gastaria duas requisições
-    // para ler o mesmo retrato.
-    if (runningRef.current) return false;
-
-    // O clique em "Verificar agora" é ação explícita da pessoa e passa por cima do lease.
-    if (reason !== "manual" && !claimLease(localStorage, tabId.current, Date.now())) {
-      return false;
+  /** Texto do selo na aba do mercado: é lá que a pessoa olha para saber o que a aba faz. */
+  const reportStatus = useCallback(() => {
+    const now = Date.now();
+    const g = peekGuard();
+    const pause = activePause(g.quarantine, now);
+    if (pause !== null) {
+      const { badge, level } = PAUSE_WORDING[pause.kind];
+      bridgeClient().status(badge(pause), level);
+      return;
     }
-    // Offline não queima requisição nem avança o `lastRun` — a idade na tela continua
-    // dizendo a verdade sobre quando o dado foi lido de fato.
-    if (typeof navigator !== "undefined" && navigator.onLine === false) return false;
+    const used = usedInWindow(g.starts, now);
+    bridgeClient().status(
+      `${used}/${WINDOW_CAP} consultas nos últimos 15 min.`,
+      used >= WINDOW_CAP ? "warn" : "ok",
+    );
+  }, [peekGuard]);
 
-    runningRef.current = true;
-    setRunning(true);
-    try {
-      const res = await batchPrices(ids, 1);
-      setSnapshot({
-        at: Date.now(),
-        prices: res.prices,
-        missing: res.missing,
-        freshness: res.freshness,
-        nextTradingAt: res.nextTradingAt,
-      });
-      nextAtRef.current = res.nextTradingAt;
-      setError(null);
-      setLastRun(Date.now());
+  /** Uma pausa começou: avisa no celular, porque quem conta com o push precisa saber que parou. */
+  const announcePause = useCallback(() => {
+    const { notify } = deps.current;
+    const pause = activePause(peekGuard().quarantine, Date.now());
+    if (!notify.ready || pause === null) return;
+    const { push, level } = PAUSE_WORDING[pause.kind];
+    void sendNtfy(notify.config.ntfyTopic, {
+      title: "Alertas de preço pausados",
+      body: push(pause),
+      priority: level === "error" ? "high" : "default",
+      tags: ["warning"],
+    });
+  }, [peekGuard]);
 
-      const stale = res.freshness.tradingAt === lastTradingAt.current;
-      lastTradingAt.current = res.freshness.tradingAt;
+  /**
+   * Uma requisição: gasta uma da cota e devolve o que o site disse sobre cada item coberto.
+   *
+   * Um item que a busca em grupo não trouxe porque a página veio cortada não recebe retrato —
+   * volta em `retry`, para ser consultado sozinho, pelo nome inteiro. Os avisos voltam como
+   * valor: quem os manda é o `pump`, no fim, agrupados.
+   */
+  const consult = useCallback(
+    async (
+      job: QueryJob,
+      server: Server,
+    ): Promise<{ outcome: Outcome | null; fired: AlertNotification[]; retry: number[] }> => {
+      const url = checkUrlForTerm(job.term, server);
+      if (url === null) return { outcome: null, fired: [], retry: [] };
 
-      // Sem canal configurado o ciclo ainda vale — ele alimenta a tabela. O que não
-      // acontece é avaliar alertas que não teriam para onde ir.
-      if (!notify.ready) return stale;
-      // Retrato idêntico ao anterior não produz decisão nova. O `lastAlertedPrice` já
-      // impediria o aviso repetido; isto evita gastar a volta.
-      if (stale && reason === "timer") return stale;
+      const startedAt = Date.now();
+      setGuard((g) => ({ ...g, starts: [...prune(g.starts, startedAt), startedAt] }));
+      const res = await bridgeClient().fetch(url);
+      const at = Date.now();
 
-      const plan = planAlerts(
-        server,
-        alerts.all,
-        favorites.set,
-        res.prices,
-        res.freshness.tradingAt,
+      let result: ReturnType<typeof interpret>;
+      try {
+        result = interpret(res, job.itemIds, at);
+      } catch {
+        result = { outcome: "error", checks: new Map() };
+      }
+      const { outcome } = result;
+
+      setGuard((g) => ({ ...g, quarantine: record(g.quarantine, outcome, at) }));
+      setLog((prev) =>
+        [
+          { at: startedAt, term: job.term, items: job.itemIds.length, status: res.status, outcome, ms: at - startedAt },
+          ...prev,
+        ].slice(0, LOG_SIZE),
       );
+
+      // Uma consulta de um item só já é a do nome inteiro: cortada ali, não há para onde recuar.
+      const grouped = job.itemIds.length > 1;
+      const retry: number[] = [];
+      const written: CheckedItem[] = [];
+      const updates: Record<string, MarketCheck> = {};
+      for (const [itemId, check] of result.checks) {
+        if (check.status === "incomplete" && grouped) {
+          retry.push(itemId);
+          continue;
+        }
+        updates[serverItemKey(server, itemId)] = check;
+        written.push({ itemId, name: loadedItems()?.get(itemId)?.name ?? `#${itemId}`, check });
+      }
+      if (written.length === 0) return { outcome, fired: [], retry };
+
+      const { alerts, favorites, notify } = deps.current;
+      setChecks((prev) => ({ ...keepFavorites(prev, favorites.set), ...updates }));
+
+      // Sem canal ligado não se avalia: gravar o "já avisei" sem ter avisado faria o alerta
+      // calar justamente quando a pessoa ligasse o canal.
+      if (!notify.ready) return { outcome, fired: [], retry };
+      const plan = planAlerts(server, alerts.all, favorites.set, written);
       if (plan.patches.length > 0) alerts.patchMany(plan.patches);
-      if (plan.notifications.length === 0) return stale;
+      return { outcome, fired: plan.notifications, retry };
+    },
+    [setChecks, setGuard, setLog],
+  );
 
-      setFired((prev) => [...plan.notifications, ...prev]);
-      await pushAll(notify.config.ntfyTopic, plan.notifications);
-      return stale;
-    } catch (err) {
-      setError(messageOf(err, "Não foi possível checar os preços."));
-      return false;
+  const pump = useCallback(async () => {
+    if (pumping.current) return;
+    pumping.current = true;
+    const fired: AlertNotification[] = [];
+    try {
+      while (queueRef.current.length > 0) {
+        if (bridgeClient().state() !== "connected") break;
+        const now = Date.now();
+        if (activePause(peekGuard().quarantine, now)) break;
+
+        const slot = nextSlot(peekGuard().starts, now);
+        if (slot > now) {
+          await ticker().sleep(slot - now);
+          continue;
+        }
+
+        const job = queueRef.current.shift()!;
+        syncQueue();
+        setCurrent(job.itemIds);
+        const { outcome, fired: fromJob, retry } = await consult(job, deps.current.server);
+        fired.push(...fromJob);
+        setCurrent([]);
+        reportStatus();
+
+        if (activePause(peekGuard().quarantine, Date.now())) {
+          // Nada de "só mais um item": depois de uma recusa, a próxima requisição é a sonda,
+          // e ela só sai quando a pausa acabar. A fila recomeça inteira no próximo ciclo.
+          queueRef.current = [];
+          syncQueue();
+          if (outcome !== null) announcePause();
+          break;
+        }
+
+        // A página do grupo veio cortada sem estes: cada um vai sozinho, logo em seguida. É o
+        // mesmo planejador, com todos marcados para ir sozinhos.
+        const index = loadedItems();
+        if (retry.length > 0 && index) {
+          queueRef.current = [...planQueries(retry, index, new Set(retry)).jobs, ...queueRef.current];
+          syncQueue();
+        }
+      }
     } finally {
-      runningRef.current = false;
-      setRunning(false);
+      pumping.current = false;
+      setCurrent([]);
+      if (fired.length > 0) {
+        setFired((prev) => [...fired, ...prev]);
+        const { notify } = deps.current;
+        // `allSettled`: um push que falha não pode impedir os outros.
+        await Promise.allSettled(
+          coalesce(fired).map((m) => sendNtfy(notify.config.ntfyTopic, { ...m, priority: "high", tags: ["moneybag"] })),
+        );
+      }
     }
-    // `setSnapshot` é estável (vem de `usePersistent`, com deps `[key]`), então o ciclo
-    // continua sendo uma função só, criada uma vez.
-  }, [setSnapshot]);
+  }, [announcePause, consult, peekGuard, reportStatus]);
 
   /**
-   * Completa os favoritos que o retrato ainda não cobre, sem esperar o ciclo.
-   *
-   * Favoritar não remonta o timer (ver logo abaixo), e faz bem em não remontar — mas até o
-   * próximo despertar, que pode estar a 10 minutos, a linha nova aparecia como `#25697` e
-   * uma fileira de travessões, porque a tabela lê tudo do retrato. Recarregar a página
-   * "consertava", que é como o problema chegava a quem usa.
-   *
-   * A condição não é "alguém clicou na estrela", e sim "há favorito fora do retrato" — o
-   * que também cobre o id colado no campo, o favorito que veio de outra aba e a linha que
-   * um ciclo com erro deixou para trás.
-   *
-   * Por isso não passa pelo lease: a aba que a pessoa está olhando não pode ficar esperando
-   * a aba líder, que pode estar congelada em segundo plano. O preço é um pedido pequeno a
-   * mais por aba aberta, e é ele que paga a linha completa na hora.
+   * Planeja e enfileira. Assíncrono só por esperar o catálogo, que o planejador precisa para
+   * medir os termos.
    */
-  const pending =
-    // Retrato nenhum é o primeiro carregamento, e aí o ciclo da montagem já vai buscar
-    // todos — preencher aqui seria pedir a mesma lista duas vezes.
-    snapshot === null
-      ? []
-      : favorites.ids.filter(
-          (id) => !prices.has(id) && !missing.includes(id) && !asking.current.has(id),
-        );
+  const enqueue = useCallback(
+    async (ids: readonly number[], front: boolean) => {
+      const index = await loadItems().catch(() => null);
+      if (index === null) return;
 
-  // A dependência do efeito é a chave, e não o array: o retrato muda a cada ciclo, e sem a
-  // string estável o mesmo conjunto pendente pediria de novo a cada volta. O efeito remonta
-  // a lista a partir dela.
-  const pendingKey = pending.join(",");
+      const queued = new Set(queueRef.current.flatMap((j) => j.itemIds));
+      const fresh = ids.filter((id) => !queued.has(id));
+      if (fresh.length === 0) return;
 
+      const { server } = deps.current;
+      const plan = planQueries(fresh, index, truncatedItems(peekChecks(), server));
+      if (plan.unsearchable.length > 0) {
+        // Nenhuma requisição gasta: não há o que perguntar ao site.
+        const at = Date.now();
+        setChecks((prev) => {
+          const next = { ...prev };
+          for (const id of plan.unsearchable) {
+            const detail = index.has(id) ? "o nome não vira uma busca que o site aceite" : "item fora do catálogo";
+            next[serverItemKey(server, id)] = barrenCheck("unsearchable", at, detail);
+          }
+          return next;
+        });
+      }
+
+      queueRef.current = front ? [...plan.jobs, ...queueRef.current] : [...queueRef.current, ...plan.jobs];
+      syncQueue();
+      void pump();
+    },
+    [peekChecks, pump, setChecks],
+  );
+
+  const cancel = useCallback(() => {
+    queueRef.current = [];
+    syncQueue();
+  }, []);
+
+  // Trocar de servidor é outro mercado: o que estava na fila era para o anterior, e o alvo
+  // de cada alerta é por servidor.
+  useEffect(() => cancel(), [server, cancel]);
+
+  /** Um ciclo sobre uma lista: marca a hora, para o tique não emendar outro logo depois. */
+  const runCycle = useCallback(
+    (ids: readonly number[]) => {
+      setGuard((g) => ({ ...g, lastCycleAt: Date.now() }));
+      void enqueue(ids, false);
+    },
+    [enqueue, setGuard],
+  );
+
+  /** O tique: confere a ponte, o lease e a hora do ciclo. Não faz rede nenhuma sozinho. */
   useEffect(() => {
-    if (pendingKey === "") return;
-    const ids = pendingKey.split(",").map(Number);
-    // Marcados ANTES do pedido: favoritar oito itens seguidos são oito pedidos de um item,
-    // e não oito pedidos com a lista crescendo. Sem isto, cada clique refazia o anterior.
-    ids.forEach((id) => asking.current.add(id));
+    const tick = () => {
+      const { notify, targets } = deps.current;
+      if (bridgeClient().state() !== "connected") return;
+      if (typeof navigator !== "undefined" && navigator.onLine === false) return;
+      const now = Date.now();
+      // Reafirmado a cada tique: é o que distingue "a aba dona está viva" de "foi embora".
+      if (!claimLease(localStorage, tabId.current, now)) return;
 
-    void batchPrices(ids, 1)
-      .then((res) => {
-        // Atualizador, e não valor: um ciclo pode ter escrito no meio do caminho, e o
-        // retrato dele é mais novo que o `snapshot` que este efeito viu nascer. Nada é
-        // cancelado por um pedido novo — dois preenchimentos em voo tratam de ids
-        // diferentes, e os dois têm o que acrescentar.
-        setSnapshot((prev) =>
-          prev === null
-            ? prev
-            : {
-                ...prev,
-                prices: [...prev.prices.filter((p) => !ids.includes(p.itemId)), ...res.prices],
-                missing: [...prev.missing.filter((id) => !ids.includes(id)), ...res.missing],
-              },
-        );
-      })
-      // Silencioso de propósito: `error` é o que o ciclo apurou sobre o mercado, e um
-      // preenchimento que falhou não muda isso. O ciclo seguinte traz o item de qualquer
-      // jeito, e enquanto isso a linha segue com o id, como antes.
-      .catch(() => {})
-      // A marca vale só pelo pedido em voo. Depois dele o próprio retrato já responde
-      // "este eu tenho" — e o item que for desfavoritado e favoritado de novo volta a ser
-      // pedido, em vez de ficar marcado para sempre.
-      .finally(() => ids.forEach((id) => asking.current.delete(id)));
-  }, [pendingKey, setSnapshot]);
+      // Fila parada por pausa ou ponte que caiu: retoma assim que der.
+      if (queueRef.current.length > 0) {
+        void pump();
+        return;
+      }
+      if (pumping.current || activePause(peekGuard().quarantine, now)) return;
 
-  /**
-   * O timer liga e desliga com "há favoritos?", e não com QUANTOS há.
-   *
-   * Com a contagem, favoritar um item derrubava o timer, zerava a contagem de "a coleta
-   * mudou?" e disparava uma leitura da lista inteira — marcar oito itens seguidos custava
-   * oito varreduras completas, e desmarcar um custava outra, para reler dados que já
-   * estavam na mão. O ciclo lê os ids de `deps.current`, então ele já enxerga a lista nova
-   * no próximo despertar sem precisar remontar nada.
-   */
-  const hasFavorites = favorites.ids.length > 0;
-
-  /**
-   * O batimento do lease.
-   *
-   * Separado do ciclo porque as duas coisas têm ritmos muito diferentes: o ciclo dorme até a
-   * próxima coleta (dezenas de minutos), o batimento reafirma a cada trinta segundos. Sem
-   * ele, uma aba fechada travaria as outras por todo o intervalo de checagem — e não custa
-   * nada, é uma escrita no `localStorage`.
-   */
-  useEffect(() => {
-    if (!hasFavorites) return;
-    const beat = () => void claimLease(localStorage, tabId.current, Date.now());
-    beat();
-    const id = window.setInterval(beat, LEASE_HEARTBEAT_MS);
-    return () => window.clearInterval(id);
-  }, [hasFavorites]);
-
-  /**
-   * O timer.
-   *
-   * Só existe quando há favoritos: sem nenhum, a aba não arma timer nem faz requisição. As
-   * dependências são de propósito as duas coisas que mudam a CADÊNCIA — quantos itens há e
-   * o intervalo de reserva — e não os dados que o ciclo produz.
-   */
-  useEffect(() => {
-    if (!hasFavorites) return;
-
-    // Trocar de servidor é outro mercado: o retrato anterior não serve de comparação, e
-    // sem zerar isto o primeiro ciclo no mercado novo poderia se julgar repetido.
-    lastTradingAt.current = null;
-    nextAtRef.current = null;
-
-    let cancelled = false;
-    let handle: number | undefined;
-
-    const schedule = (stale: boolean) => {
-      if (cancelled) return;
-      const ms = nextWaitMs({
-        nextTradingAt: nextAtRef.current,
-        stale,
-        nowMs: Date.now(),
-        jitter: Math.random(),
-      });
-      handle = window.setTimeout(() => {
-        void tick("timer").then(schedule);
-      }, ms);
+      const { lastCycleAt } = peekGuard();
+      const due = lastCycleAt === null || now - lastCycleAt >= notify.config.intervalMin * 60_000;
+      if (due && targets.length > 0) runCycle(targets);
     };
 
-    // Um ciclo já ao montar: quem abre o app quer ver preço, não esperar a coleta.
-    void tick("visible").then(schedule);
+    tick();
+    return ticker().every(TICK_MS, tick);
+  }, [peekGuard, pump, runCycle]);
 
-    return () => {
-      cancelled = true;
-      if (handle !== undefined) window.clearTimeout(handle);
-    };
-    // `server` entra para o mercado novo ser lido na hora, e não só no próximo ciclo — que
-    // com 10 minutos de espera deixaria a tela mostrando os preços do mercado anterior sem
-    // nenhum aviso de que trocaram.
-  }, [hasFavorites, server, tick]);
+  const retryChallenge = useCallback(() => {
+    setGuard((g) => ({ ...g, quarantine: clearChallenge(g.quarantine) }));
+    void pump();
+  }, [pump, setGuard]);
 
-  /**
-   * Recuperação ao voltar para a aba.
-   *
-   * O navegador limita o timer a ~1 tique/min em aba oculta e pode congelá-la de vez
-   * depois de alguns minutos. Então o timer não é fonte de correção.
-   *
-   * A condição é "já passou a hora da coleta", e não "faz tempo que não checo": só faz
-   * sentido pedir de novo quando pode haver dado novo do outro lado. Voltar para a aba dez
-   * vezes em cinco minutos não gera dez requisições.
-   */
+  // A pessoa clicou no favorito de novo na aba do mercado: é o sinal de "resolvi o desafio".
+  useEffect(() => bridgeClient().onNewSession(retryChallenge), [retryChallenge]);
+
+  // Ponte conectada ou reconectada: o selo mostra o estado atual, e a fila parada anda.
   useEffect(() => {
-    const onVisible = () => {
-      if (document.visibilityState !== "visible") return;
-      // `collectionDue` já cobre "nunca checei": sem ciclo concluído, `nextAtRef` é null.
-      if (collectionDue(nextAtRef.current, Date.now())) void tick("visible");
-    };
-    document.addEventListener("visibilitychange", onVisible);
-    return () => document.removeEventListener("visibilitychange", onVisible);
-  }, [tick]);
+    if (bridge.state !== "connected") return;
+    reportStatus();
+    void pump();
+  }, [bridge.state, pump, reportStatus]);
 
-  const checkNow = useCallback(() => void tick("manual"), [tick]);
+  const checkNow = useCallback(() => runCycle(deps.current.targets), [runCycle]);
+  const checkAll = useCallback(() => runCycle(deps.current.favorites.ids), [runCycle]);
+  const checkItem = useCallback((itemId: number) => void enqueue([itemId], true), [enqueue]);
+
+  const checkOf = useCallback((itemId: number) => checks[serverItemKey(server, itemId)], [checks, server]);
   const dismissFired = useCallback(() => setFired([]), []);
+
+  /**
+   * O custo em requisições das duas ações, calculado uma vez por mudança de lista.
+   *
+   * O painel mostra os dois números a cada render, e o planejamento varre o catálogo. A chave
+   * dos itens cortados é uma string: `checks` muda a cada consulta, mas o conjunto de cortados
+   * quase nunca — e só ele muda a conta.
+   */
+  const soloKey = useMemo(() => [...truncatedItems(checks, server)].sort().join(","), [checks, server]);
+  const { cycleRequests, allRequests } = useMemo(() => {
+    if (index === null) return { cycleRequests: targets.length, allRequests: favorites.ids.length };
+    const solo = new Set(soloKey ? soloKey.split(",").map(Number) : []);
+    return {
+      cycleRequests: planQueries(targets, index, solo).jobs.length,
+      allRequests: planQueries(favorites.ids, index, solo).jobs.length,
+    };
+  }, [index, targets, favorites.ids, soloKey]);
+
+  const queuedIds = useMemo(() => queue.flatMap((j) => j.itemIds), [queue]);
 
   return {
     favorites,
     alerts,
     notify,
-    prices,
-    missing,
-    freshness,
-    nextTradingAt,
-    lastRun,
-    running,
-    error,
+    bridge,
+    index,
+    checkOf,
+    quarantine: guard.quarantine,
+    starts: guard.starts,
+    targets,
+    cycleRequests,
+    allRequests,
+    queue: queuedIds,
+    queuedRequests: queue.length,
+    current,
+    lastCycleAt: guard.lastCycleAt,
+    log,
     fired,
     dismissFired,
     checkNow,
+    checkAll,
+    checkItem,
+    cancel,
+    retryChallenge,
   };
-}
-
-/** Manda os pushes. O que dizer e quando agrupar é decidido em `lib/alerts.ts`. */
-async function pushAll(topic: string, notifications: AlertNotification[]): Promise<void> {
-  // `allSettled`: um push que falha não pode impedir os outros.
-  await Promise.allSettled(
-    coalesce(notifications).map((m) =>
-      sendNtfy(topic, { ...m, priority: "high", tags: ["moneybag"] }),
-    ),
-  );
 }

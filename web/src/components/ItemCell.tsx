@@ -1,4 +1,4 @@
-import type { ItemBrief } from "../api/types.js";
+import type { ItemBrief } from "../lib/catalogue/catalogue.js";
 import { itemLabel } from "../lib/format.js";
 import { CopyButton } from "./CopyButton.js";
 import { ItemHover } from "./ItemHover.js";
@@ -7,9 +7,8 @@ import { ItemIcon } from "./ItemIcon.js";
 /**
  * O mínimo que esta célula lê de um item.
  *
- * Um `ItemBrief` inteiro satisfaz isto, então nada muda para quem já passava um. Mas a aba
- * Favoritos precisa desenhar a linha de um id colado antes de o preço chegar, e com o tipo
- * largo isso exigia forjar `links`/`type`/`inMarket` só para calar o compilador.
+ * É o `ItemBrief` inteiro hoje; o alias existe para quem desenha uma linha antes de o catálogo
+ * chegar deixar claro que só precisa destes três campos.
  */
 export type ItemLabel = Pick<ItemBrief, "itemId" | "name" | "slots">;
 
@@ -17,7 +16,7 @@ interface Props {
   item: ItemLabel;
   descriptions: Record<string, string>;
   onSelect: (itemId: number) => void;
-  /** Só o replay conhece refino; nas listas de mercado é sempre 0. */
+  /** Só o replay conhece refino; nos favoritos é sempre 0. */
   refine?: number;
   /** Quando o ícone e o nome ocupam células separadas, peça uma parte de cada vez. */
   part?: "both" | "icon" | "name";
@@ -36,9 +35,8 @@ interface Props {
 /**
  * Ícone com descrição no hover + nome clicável que abre o painel do item.
  *
- * Estava copiado em cinco lugares (as três listas de mercado, a tabela do replay e os
- * candidatos a venda), cada um refazendo a chave `String(itemId)` e, num dos casos,
- * remontando o rótulo à mão em vez de chamar `itemLabel`.
+ * Compartilhado pela tabela do inventário e pela dos favoritos, para a chave
+ * `String(itemId)` e o rótulo com refino e slots saírem iguais nas duas.
  */
 export function ItemCell({
   item,

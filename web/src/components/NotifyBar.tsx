@@ -1,8 +1,9 @@
 /**
- * O canal de notificação e o estado do laço.
+ * O canal de notificação.
  *
  * Colapsável porque é configuração que se faz uma vez: aberta por padrão só quando ainda
- * não há canal ligado, que é justamente quando ela precisa ser vista.
+ * não há canal ligado, que é justamente quando ela precisa ser vista. O estado das consultas
+ * mora no `PriceWatchPanel`.
  *
  * A linha sobre "só com a aba aberta" fica sempre visível de propósito. É a limitação real
  * de fazer isto no navegador, e esconder isso significaria alguém contando com um alerta
@@ -11,7 +12,7 @@
 
 import { useEffect, useState } from "react";
 
-import { ago, plural, upcoming } from "../lib/format.js";
+import { plural } from "../lib/format.js";
 import { sendNtfyTest, suggestTopic } from "../lib/ntfy.js";
 import type { AlertsConfigApi } from "../state/useAlertsConfig.js";
 import { NtfyHelp } from "./NtfyHelp.js";
@@ -22,21 +23,9 @@ interface Props {
   notify: AlertsConfigApi;
   /** Quantos alertas estão ligados neste servidor. */
   enabledCount: number;
-  lastRun: number | null;
-  running: boolean;
-  /** Epoch em segundos da próxima coleta, quando o servidor sabe. */
-  nextTradingAt: number | null;
-  onCheckNow: () => void;
 }
 
-export function NotifyBar({
-  notify,
-  enabledCount,
-  lastRun,
-  running,
-  nextTradingAt,
-  onCheckNow,
-}: Props) {
+export function NotifyBar({ notify, enabledCount }: Props) {
   const { config, update, ready } = notify;
   const [open, setOpen] = useState(!ready);
   const [helpOpen, setHelpOpen] = useState(false);
@@ -70,20 +59,7 @@ export function NotifyBar({
               {!ready && " — falta ligar o canal"}
             </>
           )}
-          {" · "}
-          {running
-            ? "checando…"
-            : lastRun === null
-              ? "ainda não checou"
-              : `última checagem ${ago(lastRun / 1000)}`}
         </span>
-        <button
-          onClick={onCheckNow}
-          disabled={running}
-          title="Lê os preços agora, sem esperar a próxima coleta"
-        >
-          Verificar agora
-        </button>
       </div>
 
       {open && (
@@ -138,27 +114,10 @@ export function NotifyBar({
             </p>
           </div>
 
-          <div className="notify-channel">
-            <strong>Quando checa</strong>
-            <p className="footer-note">
-              Não há o que configurar: os preços só mudam quando a coleta do projeto roda, a
-              cada 10 minutos, então a checagem acontece{" "}
-              <strong>uma vez por coleta</strong> — logo depois de o dado novo chegar, cerca
-              de seis vezes por hora. Perguntar com mais frequência devolveria exatamente os
-              mesmos números.
-              {nextTradingAt !== null && (
-                <>
-                  {" "}
-                  Próximos preços previstos <strong>{upcoming(nextTradingAt)}</strong>.
-                </>
-              )}
-            </p>
-          </div>
-
           <p className="footer-note">
-            Os alertas só rodam enquanto esta aba estiver aberta, e o navegador pode espaçar
-            as checagens quando ela fica no fundo. Fixar a aba ajuda. Se "última checagem"
-            envelhecer muito, é isso que aconteceu.
+            Os alertas só rodam enquanto esta aba e a aba do mercado estiverem abertas. As duas
+            podem ficar em segundo plano; se o "último ciclo" envelhecer muito, uma delas foi
+            fechada ou descarregada pelo navegador.
           </p>
         </div>
       )}

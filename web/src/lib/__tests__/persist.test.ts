@@ -13,8 +13,8 @@ import {
   parseAlerts,
   parseAlertsConfig,
   parseFavorites,
-  parsePricesSnapshot,
 } from "../persist.js";
+import { DEFAULT_INTERVAL_MIN } from "../market/budget.js";
 
 describe("parseFavorites", () => {
   it("lê uma lista de ids", () => {
@@ -105,9 +105,10 @@ describe("parseAlerts", () => {
 
 describe("parseAlertsConfig", () => {
   it("lê a configuração inteira", () => {
-    expect(parseAlertsConfig('{"ntfyEnabled":true,"ntfyTopic":"abc"}')).toEqual({
+    expect(parseAlertsConfig('{"ntfyEnabled":true,"ntfyTopic":"abc","intervalMin":30}')).toEqual({
       ntfyEnabled: true,
       ntfyTopic: "abc",
+      intervalMin: 30,
     });
   });
 
@@ -125,50 +126,18 @@ describe("parseAlertsConfig", () => {
     expect(parseAlertsConfig('{"ntfyEnabled":true,"ntfyTopic":"x","intervalSec":300}')).toEqual({
       ntfyEnabled: true,
       ntfyTopic: "x",
+      intervalMin: DEFAULT_INTERVAL_MIN,
     });
+  });
+
+  /** O intervalo decide quantas requisições saem do IP da pessoa: fora das opções, padrão. */
+  it("intervalo fora das opções da tela volta ao padrão", () => {
+    for (const intervalMin of [1, 0, -5, 7, "10", null]) {
+      expect(parseAlertsConfig(JSON.stringify({ intervalMin }))!.intervalMin).toBe(DEFAULT_INTERVAL_MIN);
+    }
   });
 
   it("devolve null quando não é objeto", () => {
     for (const raw of [null, "[]", '"x"', "quebrado"]) expect(parseAlertsConfig(raw)).toBeNull();
-  });
-});
-
-/**
- * O retrato guardado é cache de EXIBIÇÃO: a aba que não roda o laço lê daqui, e um
- * recarregamento pinta a tabela na hora em vez de mostrar travessões até o próximo ciclo.
- * Por ser cache, entrada suja tem que degradar para menos linhas — nunca para uma exceção
- * no meio do primeiro render.
- */
-describe("parsePricesSnapshot", () => {
-  const bom = {
-    at: 1_700_000_000_000,
-    prices: [{ itemId: 501, name: "Poção" }],
-    missing: [999],
-    freshness: { tradingAt: 1, marketAt: 2, tradingAgeMin: 3 },
-    nextTradingAt: 1_700_000_100,
-  };
-
-  it("lê um retrato completo", () => {
-    expect(parsePricesSnapshot(JSON.stringify(bom))).toEqual(bom);
-  });
-
-  it("descarta preço sem id utilizável e preserva os bons", () => {
-    const raw = JSON.stringify({ ...bom, prices: [{ itemId: 501 }, { itemId: 0 }, {}, null, 7] });
-    expect(parsePricesSnapshot(raw)!.prices).toEqual([{ itemId: 501 }]);
-  });
-
-  it("sem 'at' ou sem lista de preços não é retrato", () => {
-    expect(parsePricesSnapshot(JSON.stringify({ ...bom, at: "agora" }))).toBeNull();
-    expect(parsePricesSnapshot(JSON.stringify({ ...bom, prices: {} }))).toBeNull();
-    for (const raw of [null, "[]", "quebrado"]) expect(parsePricesSnapshot(raw)).toBeNull();
-  });
-
-  it("campos acessórios ruins caem em vazio em vez de derrubar o retrato", () => {
-    const r = parsePricesSnapshot(
-      JSON.stringify({ at: 1, prices: [], missing: "tudo", freshness: 7, nextTradingAt: "logo" }),
-    )!;
-    expect(r.missing).toEqual([]);
-    expect(r.freshness).toBeNull();
-    expect(r.nextTradingAt).toBeNull();
   });
 });

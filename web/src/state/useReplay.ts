@@ -1,83 +1,68 @@
-import { useCallback, useReducer } from "react";
+/**
+ * O replay carregado, lido dentro do navegador.
+ *
+ * O arquivo não sai do computador: é lido com `rrfparser` e nomeado pelo catálogo estático.
+ * Mora no `App` para sair para Favoritos e voltar não perder o que foi carregado.
+ */
 
-import { ApiError, postReplay, type ReplayOptions } from "../api/client.js";
-import type { ReplayResponse } from "../api/types.js";
+import { useCallback, useState } from "react";
+
+import { loadItems, type ItemIndex } from "../lib/catalogue/catalogue.js";
+import { readReplay, type ReplayInventory } from "../lib/replay/inventory.js";
 
 export type ReplayState =
   | { kind: "idle" }
-  | { kind: "loading"; fileName: string }
+  | { kind: "loading" }
   | { kind: "error"; message: string }
-  | { kind: "loaded"; fileName: string; valuation: ReplayResponse };
-
-type Action =
-  | { type: "start"; fileName: string }
-  | { type: "ok"; fileName: string; valuation: ReplayResponse }
-  | { type: "fail"; message: string }
-  | { type: "clear" };
-
-/**
- * O `.rrf` fica guardado para poder ser reprecificado.
- *
- * Trocar de servidor muda todos os preços, e pedir o arquivo de novo por causa disso
- * seria trabalho que o navegador já tem em mãos. É o File original, não uma cópia dos
- * bytes — custo praticamente zero.
- */
-let lastFile: File | null = null;
-
-function reducer(state: ReplayState, action: Action): ReplayState {
-  switch (action.type) {
-    case "start":
-      return { kind: "loading", fileName: action.fileName };
-    case "ok":
-      return { kind: "loaded", fileName: action.fileName, valuation: action.valuation };
-    case "fail":
-      return { kind: "error", message: action.message };
-    case "clear":
-      return { kind: "idle" };
-    default:
-      return state;
-  }
-}
+  | { kind: "loaded"; inventory: ReplayInventory };
 
 export interface ReplayController {
   state: ReplayState;
-  upload: (file: File, opts?: ReplayOptions) => Promise<void>;
-  /** Repete a última avaliação — usado quando o servidor ativo muda. */
-  reprice: () => void;
+  upload: (file: File) => Promise<void>;
   clear: () => void;
 }
 
 export function useReplay(onUploadStart?: () => void): ReplayController {
-  const [state, dispatch] = useReducer(reducer, { kind: "idle" });
+  const [state, setState] = useState<ReplayState>({ kind: "idle" });
 
   const upload = useCallback(
-    async (file: File, opts: ReplayOptions = {}): Promise<void> => {
-      lastFile = file;
-      dispatch({ type: "start", fileName: file.name });
-      // O catálogo de descrições começa a baixar aqui, em paralelo: a ida e volta do
-      // upload paga o download, e quando a tabela aparece o hover já funciona.
+    async (file: File): Promise<void> => {
+      setState({ kind: "loading" });
+      // O catálogo de descrições começa a baixar aqui, em paralelo: quando a tabela aparece,
+      // o hover já funciona.
       onUploadStart?.();
+
+      let loaded: [ItemIndex, ArrayBuffer];
       try {
-        dispatch({ type: "ok", fileName: file.name, valuation: await postReplay(file, opts) });
-      } catch (err) {
-        const message =
-          err instanceof ApiError
-            ? err.message
-            : "Não foi possível falar com o serviço. Verifique sua conexão.";
-        dispatch({ type: "fail", message });
+        // Os dois ao mesmo tempo: ler o arquivo do disco não espera o catálogo chegar.
+        loaded = await Promise.all([loadItems(), file.arrayBuffer()]);
+      } catch {
+        setState({
+          kind: "error",
+          message: "Não foi possível carregar o catálogo de itens. Verifique sua conexão e tente de novo.",
+        });
+        return;
+      }
+      const [index, bytes] = loaded;
+
+      // Uma volta do laço antes do trabalho síncrono, para o "lendo…" chegar a aparecer: um
+      // replay de vários megabytes segura a thread da página enquanto é decodificado.
+      // `setTimeout`, e não `requestAnimationFrame`: com a aba em segundo plano o navegador
+      // para de pintar, e a leitura ficaria esperando a pessoa voltar para a aba.
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      try {
+        setState({ kind: "loaded", inventory: readReplay(bytes, index) });
+      } catch {
+        setState({
+          kind: "error",
+          message: "Este arquivo não parece um replay do Ragnarok (.rrf), ou está corrompido.",
+        });
       }
     },
     [onUploadStart],
   );
 
-  const reprice = useCallback(() => {
-    if (lastFile) void upload(lastFile);
-  }, [upload]);
+  const clear = useCallback(() => setState({ kind: "idle" }), []);
 
-  const clear = useCallback(() => {
-    lastFile = null;
-    dispatch({ type: "clear" });
-  }, []);
-
-  return { state, upload, reprice, clear };
+  return { state, upload, clear };
 }

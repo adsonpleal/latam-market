@@ -1,24 +1,27 @@
 /**
- * A aba Favoritos.
+ * A aba Favoritos: os itens favoritados, o preço consultado de cada um e os alertas.
  *
- * Não busca preço nenhum: quem é dono dessa requisição é o laço, e o porquê está no
- * cabeçalho de `state/useFavoriteWatch.ts`. Aqui só se mostra o que ele leu.
- *
- * A única requisição que sai daqui é o `useMovers`, para as colunas "Antes" e "Variação".
+ * Não consulta nada sozinha: quem é dono das consultas ao site é o laço, e o porquê está no
+ * cabeçalho de `state/useFavoriteWatch.ts`. Aqui só se mostra o que ele leu e se oferece o
+ * que ele sabe fazer.
  */
 
 import { useEffect, useMemo, useState } from "react";
+import { NavLink } from "react-router-dom";
 
-import type { Server } from "../api/client.js";
+import type { Server } from "../lib/server.js";
 import { AlertModal } from "../components/AlertModal.js";
+import { ClearFavoritesModal } from "../components/ClearFavoritesModal.js";
 import { FavoritesTable, type FavoriteRow } from "../components/FavoritesTable.js";
-import { FreshnessBadge } from "../components/Freshness.js";
 import { NotifyBar } from "../components/NotifyBar.js";
+import { PageTitle } from "../components/PageTitle.js";
+import { PauseBanner } from "../components/PauseBanner.js";
+import { PriceWatchPanel } from "../components/PriceWatchPanel.js";
 import { plural } from "../lib/format.js";
-import { parseItemId } from "../lib/persist.js";
+import { activePause } from "../lib/market/quarantine.js";
 import type { Catalogue } from "../state/useCatalogue.js";
 import type { FavoriteWatch } from "../state/useFavoriteWatch.js";
-import { useMovers } from "../state/useMovers.js";
+import { useNow } from "../state/useNow.js";
 
 interface Props {
   catalogue: Catalogue;
@@ -28,77 +31,65 @@ interface Props {
 }
 
 export function FavoritosPage({ catalogue, watch, onSelectItem, server }: Props) {
-  const { favorites, alerts, notify, prices, missing } = watch;
-
-  const movers = useMovers(server);
-  const [addInput, setAddInput] = useState("");
-  const [feedback, setFeedback] = useState<string | null>(null);
+  const { favorites, alerts, notify, index, checkOf, queue, current } = watch;
   const [editing, setEditing] = useState<number | null>(null);
+  const [clearing, setClearing] = useState(false);
+  // Um segundo, porque a faixa de pausa conta o tempo que falta.
+  const pause = activePause(watch.quarantine, useNow(1_000));
 
   // A descrição alimenta o hover do ícone; quem chega direto nesta aba não passou por
-  // upload nenhum.
+  // replay nenhum.
   useEffect(() => {
     void catalogue.loadDescriptions();
   }, [catalogue.loadDescriptions]);
 
-  useEffect(() => {
-    if (feedback === null) return;
-    const id = window.setTimeout(() => setFeedback(null), 2_500);
-    return () => window.clearTimeout(id);
-  }, [feedback]);
-
   const rows = useMemo<FavoriteRow[]>(
     () =>
-      favorites.ids.map((itemId) => {
-        const mover = movers.get(itemId);
-        return {
-          itemId,
-          price: prices.get(itemId),
-          alert: alerts.get(server, itemId),
-          before: mover?.before ?? null,
-          changePct: mover?.changePct ?? null,
-        };
-      }),
+      favorites.ids.map((itemId) => ({
+        item: index?.get(itemId) ?? { itemId, name: `#${itemId}`, slots: null },
+        check: checkOf(itemId),
+        alert: alerts.get(server, itemId),
+        pending: current.includes(itemId) ? "current" : queue.includes(itemId) ? "queued" : null,
+      })),
     // `alerts.get` e não o objeto `alerts`: aquele é um `useCallback` sobre os alertas, e
     // portanto muda exatamente quando eles mudam. O objeto é novo a cada render, e depender
     // dele remontava as linhas — e com elas o modelo ordenado da tabela — a cada tique.
-    [favorites.ids, prices, alerts.get, server, movers],
+    [favorites.ids, index, checkOf, alerts.get, server, current, queue],
   );
 
-  const submitId = (): void => {
-    const itemId = parseItemId(addInput);
-    if (itemId === null) {
-      setFeedback("ID inválido");
-      return;
-    }
-    // `add` e não `toggle`: enviar duas vezes o mesmo id não pode desfavoritar.
-    if (favorites.add(itemId)) {
-      setFeedback(`Adicionado #${itemId}`);
-      setAddInput("");
-    } else {
-      setFeedback(`#${itemId} já está nos favoritos`);
-    }
-  };
+  /** Favoritos cujo id o catálogo não conhece. Nada enquanto o catálogo não chegou. */
+  const missing = useMemo(() => (index ? favorites.ids.filter((id) => !index.has(id)) : []), [index, favorites.ids]);
 
-  const editingPrice = editing === null ? undefined : prices.get(editing);
+  const editingName = editing === null ? "" : (index?.get(editing)?.name ?? `#${editing}`);
+  const canCheck = watch.bridge.state === "connected" && pause === null;
 
   return (
     <section className="page">
-      <h1>Favoritos</h1>
-      <p className="lead">
-        Sua lista de itens para acompanhar, com alerta de preço no celular. A lista vale para
-        os dois servidores — o <strong>alvo</strong> de cada alerta é por servidor, porque
-        FREYA e NIDHOGG cobram preços bem diferentes pelo mesmo item.
-      </p>
+      <PageTitle title="Favoritos">
+        <p>
+          Os itens que você favoritou na <NavLink to="/buscar">busca</NavLink> ou no inventário.
+        </p>
+        <p>
+          Conecte-se ao site do mercado, atualize os preços e configure um alvo: quando o mercado
+          bater o número, o alerta chega no celular.
+        </p>
+        <p>
+          A lista vale para os dois servidores, mas o <strong>alvo</strong> de cada alerta é por
+          servidor — FREYA e NIDHOGG cobram preços bem diferentes.
+        </p>
+      </PageTitle>
 
-      <NotifyBar
-        notify={notify}
-        enabledCount={alerts.enabledCount(server)}
-        lastRun={watch.lastRun}
-        running={watch.running}
-        nextTradingAt={watch.nextTradingAt}
-        onCheckNow={watch.checkNow}
-      />
+      {pause && (
+        <PauseBanner
+          pause={pause}
+          strikes={watch.quarantine.strikes}
+          onRetryChallenge={watch.retryChallenge}
+        />
+      )}
+
+      <PriceWatchPanel watch={watch} server={server} />
+
+      <NotifyBar notify={notify} enabledCount={alerts.enabledCount(server)} />
 
       {watch.fired.length > 0 && (
         <div className="alert-banner">
@@ -111,42 +102,13 @@ export function FavoritosPage({ catalogue, watch, onSelectItem, server }: Props)
                 </li>
               ))}
             </ul>
-            {watch.fired.length > 5 && (
-              <p>e mais {plural(watch.fired.length - 5, "item", "itens")}.</p>
-            )}
+            {watch.fired.length > 5 && <p>e mais {plural(watch.fired.length - 5, "item", "itens")}.</p>}
           </div>
           <button className="ghost" onClick={watch.dismissFired}>
             Limpar
           </button>
         </div>
       )}
-
-      <div className="filters">
-        <span>
-          {favorites.ids.length === 0
-            ? "nenhum favorito"
-            : `${plural(favorites.ids.length, "favorito", "favoritos")} em ${server}`}
-        </span>
-        {watch.freshness && <FreshnessBadge freshness={watch.freshness} />}
-
-        <div className="fav-add">
-          <input
-            type="text"
-            inputMode="numeric"
-            placeholder="Colar um ID"
-            value={addInput}
-            onChange={(e) => setAddInput(e.target.value)}
-            onKeyDown={(e) => e.key === "Enter" && submitId()}
-            aria-label="Adicionar favorito por ID"
-          />
-          <button onClick={submitId} disabled={addInput.trim() === ""}>
-            Adicionar
-          </button>
-        </div>
-        {feedback && <span className="fav-feedback">{feedback}</span>}
-      </div>
-
-      {watch.error && <p className="error">{watch.error}</p>}
 
       {missing.length > 0 && (
         <p className="error">
@@ -159,32 +121,47 @@ export function FavoritosPage({ catalogue, watch, onSelectItem, server }: Props)
         </p>
       )}
 
+      {favorites.ids.length > 0 && (
+        <div className="result-head">
+          <span>{plural(favorites.ids.length, "favorito", "favoritos")}</span>
+          <button className="ghost" onClick={() => setClearing(true)}>
+            Limpar favoritos
+          </button>
+        </div>
+      )}
+
       {favorites.ids.length === 0 ? (
         <div className="empty">
           <p>
-            Clique na estrela ao lado de um item — na aba <strong>Buscar</strong> ou no painel
-            de detalhe — para favoritar. Ou cole um <strong>ID</strong> no campo acima.
+            Procure seus itens na aba <NavLink to="/buscar">Buscar</NavLink> e clique na estrela — ou
+            em <strong>Favoritar todos</strong> para levar a busca inteira. A estrela também aparece
+            em <strong>Meu inventário</strong>.
           </p>
           <p>
-            Os favoritos ficam salvos neste navegador. Configure um alvo de preço em cada um e
-            o alerta chega no celular quando o mercado bater o número.
+            Os favoritos ficam salvos neste navegador. Configure um alvo de preço em cada um, conecte
+            a aba do mercado e o alerta chega no celular quando o preço bater.
           </p>
         </div>
       ) : (
         <FavoritesTable
           rows={rows}
+          server={server}
           descriptions={catalogue.descriptions}
           onSelect={onSelectItem}
           onEditAlert={setEditing}
+          onCheck={watch.checkItem}
+          canCheck={canCheck}
         />
       )}
+
+      {clearing && <ClearFavoritesModal favorites={favorites} alerts={alerts} onClose={() => setClearing(false)} />}
 
       {editing !== null && (
         <AlertModal
           itemId={editing}
-          itemName={editingPrice?.name ?? `#${editing}`}
+          itemName={editingName}
           server={server}
-          currentMin={editingPrice?.offers?.min ?? null}
+          currentMin={checkOf(editing)?.min ?? null}
           alert={alerts.get(server, editing)}
           onSave={(patch) => alerts.set(server, editing, patch)}
           onRemove={() => alerts.remove(server, editing)}

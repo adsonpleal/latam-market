@@ -1,8 +1,7 @@
-# Cabeçalhos dos arquivos estáticos. Substitui os dois matchers que o fragmento do Caddy
-# aplicava, e pela mesma razão de sempre:
+# Cabeçalhos dos arquivos estáticos, lidos pelo Cloudflare Pages.
 #
-# O Vite carimba hash no nome de todo asset, e o build do catálogo faz o mesmo com as
-# descrições — os dois podem ser imutáveis. O HTML NÃO pode: é ele que aponta para os hashes
+# O Vite carimba hash no nome de todo asset, e o build do catálogo faz o mesmo com os três
+# arquivos que gera (itens, descrições, intransferíveis) — todos podem ser imutáveis. O HTML NÃO pode: é ele que aponta para os hashes
 # novos, e um deploy troca todos de uma vez. Um índice cacheado deixa o navegador pedindo
 # assets que não existem mais — tela branca até limpar o cache na mão.
 #

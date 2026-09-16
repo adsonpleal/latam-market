@@ -1,15 +1,15 @@
 name: Deploy
 
-# Um deploy por push na main. Um processo só na VM serve a API, o MCP, a interface e a
-# coleta, então não há motivo para filtrar por caminho: qualquer mudança em src/, web/ ou
-# data/ muda o que roda.
+# Um deploy por push na main. O site é estático — a interface, o catálogo gerado de
+# data/latam-items.json e nada mais —, então não há motivo para filtrar por caminho: qualquer
+# mudança em web/, data/ ou tools/ muda o que é publicado ou o que é testado.
 on:
   push:
     branches: [main]
   workflow_dispatch:
 
-# O mesmo grupo do deploy do coletor: os dois reiniciam a MESMA unit, e dois restarts
-# cruzados deixariam o processo subindo com metade de cada versão.
+# Um deploy por vez: o Cloudflare Pages aceita dois uploads cruzados, e o que terminar por
+# último vira a produção — que pode ser o commit mais velho.
 concurrency:
   group: latam-market
   cancel-in-progress: false
@@ -40,89 +40,49 @@ jobs:
       - run: pnpm install --frozen-lockfile
 
       - name: Typecheck
-        run: |
-          pnpm typecheck
-          pnpm --filter web typecheck
+        run: pnpm --filter web typecheck
 
-      # A suíte inteira roda em processo, sobre SQLite em memória — a paridade entre API e
-      # MCP inclusive. Se quebrar, nada sobe.
+      # Na raiz só sobraram os testes de tools/ (o sync do catálogo); o resto mora em web/. Tudo em processo, sem rede. Se quebrar, nada sobe.
       - name: Testes
         run: |
           pnpm test
           pnpm --filter web test
 
+      # O `prebuild` do web gera o catálogo (itens, descrições, intransferíveis) de
+      # data/latam-items.json em web/public/generated/, que o Vite copia para o dist.
       - name: Build
-        run: |
-          pnpm --filter web build
-          # DEPOIS do vite build, que limpa o dist: é o catálogo que o servidor carrega.
-          pnpm catalogue
-          pnpm build
+        run: pnpm --filter web build
 
+      # O `_headers` é o que dá `immutable` aos assets com hash e `must-revalidate` ao HTML;
+      # sem ele o Pages publica com o cache padrão e um deploy pode deixar tela branca em quem
+      # tinha o índice velho. Os três JSON gerados são o catálogo inteiro: sem eles a busca e
+      # o replay abrem vazios, sem erro nenhum no build.
       - name: Conferir os artefatos
         run: |
           test -s web/dist/index.html
+          test -s web/dist/_headers
           ls web/dist/assets/*.js >/dev/null
-          ls web/dist/generated/catalogue.*.json >/dev/null
-          ls web/dist/generated/descriptions.*.json >/dev/null
-          test -s dist/server.mjs
-          test -s dist/crawl-thread.mjs
-          test -s dist/import-cloudflare.mjs
-          ls migrations/*.sql >/dev/null
-          tar -czf service.tar.gz dist web/dist migrations infra
-          ls -lh service.tar.gz
+          ls web/dist/generated/items.*.json \
+             web/dist/generated/descriptions.*.json \
+             web/dist/generated/untradable.*.json
+          du -sh web/dist
 
-      - name: Configurar SSH
-        env:
-          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
-          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
-        run: |
-          mkdir -p ~/.ssh
-          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/deploy.pem
-          chmod 600 ~/.ssh/deploy.pem
-          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts 2>/dev/null
-
-      # Na VM: troca os arquivos e reinicia a unit. O banco não mora aqui (StateDirectory,
-      # /var/lib/latam-market), então o `--delete` só leva código velho.
-      - name: Enviar e reiniciar
-        env:
-          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
-        run: |
-          scp -i ~/.ssh/deploy.pem service.tar.gz "ubuntu@$DEPLOY_HOST:~/"
-          ssh -i ~/.ssh/deploy.pem "ubuntu@$DEPLOY_HOST" '
-            set -e
-            rm -rf ~/service-next && mkdir -p ~/service-next
-            tar -xzf ~/service.tar.gz -C ~/service-next
-            test -s ~/service-next/dist/server.mjs
-            mv ~/service-next/web/dist ~/service-next/web-dist && rm -rf ~/service-next/web && mv ~/service-next/web-dist ~/service-next/web
-
-            sudo install -d -o ubuntu -g ubuntu /opt/latam-market
-            sudo rsync -a --delete ~/service-next/ /opt/latam-market/
-            sudo chown -R ubuntu:ubuntu /opt/latam-market
-            chmod +x /opt/latam-market/infra/smoke.sh /opt/latam-market/infra/vm-prep.sh
-            rm -rf ~/service-next ~/service.tar.gz
-
-            for f in latam-market.service latam-market-backup.service latam-market-backup.timer; do
-              sudo cp "/opt/latam-market/infra/$f" /etc/systemd/system/
-            done
-            sudo systemctl daemon-reload
-            sudo systemctl enable --quiet latam-market latam-market-backup.timer
-            sudo systemctl start latam-market-backup.timer
-            sudo systemctl restart latam-market
-          '
-
-      # Contra o processo local, pelo Host público: o domínio pode ainda estar apontando para
-      # outro lugar (antes da virada do túnel), e o que este deploy trocou foi a VM.
-      - name: Verificar
-        env:
-          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
-        run: |
-          ssh -i ~/.ssh/deploy.pem "ubuntu@$DEPLOY_HOST" '
-            for _ in $(seq 60); do
-              curl -sf -H "Host: mercado.latam-tools.com.br" http://127.0.0.1:8788/healthz >/dev/null && break
-              sleep 1
-            done
-            HOST_HEADER=mercado.latam-tools.com.br bash /opt/latam-market/infra/smoke.sh http://127.0.0.1:8788
-          '
+      # Upload direto (direct upload) para o projeto `latam-market` do Cloudflare Pages. O
+      # `--branch=main` é o que faz o deploy ser de PRODUÇÃO: qualquer outro nome de branch
+      # vira preview em <hash>.latam-market.pages.dev e não chega ao domínio.
+      #
+      # O token (secret CLOUDFLARE_API_TOKEN) precisa só de uma permissão:
+      #   Account › Cloudflare Pages › Edit
+      # restrito à conta que tem o projeto. Não precisa de nada de zona nem de DNS — o
+      # domínio próprio é configurado uma vez no painel, não por este workflow. O
+      # CLOUDFLARE_ACCOUNT_ID é o id da conta (painel → qualquer zona → barra lateral, ou a
+      # URL do dashboard). Passo a passo em infra/DESLIGAMENTO.md.
+      - name: Publicar no Cloudflare Pages
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          command: pages deploy web/dist --project-name=latam-market --branch=main
 
       # A referência é a última versão ANUNCIADA, não a do commit anterior.
       #

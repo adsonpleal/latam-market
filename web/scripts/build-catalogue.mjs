@@ -1,22 +1,17 @@
 /**
- * Extrai da `data/latam-items.json` os dois pedaços que o navegador precisa e nenhum
- * a mais.
+ * Extrai da `data/latam-items.json` os pedaços que o navegador precisa e nenhum a mais.
  *
- * O catálogo tem 6,6 MB e nunca muda entre deploys, então ele **não** passa pela API:
- * vira asset estático servido pelo mesmo Caddy, com hash no nome e cache imutável.
- * Alternativas descartadas, e por quê:
+ * O site é só arquivos estáticos: não há servidor para buscar item ou ler replay, então tudo
+ * que a interface sabe sobre o catálogo sai daqui, com hash no nome e cache imutável. São
+ * três arquivos, e não um, porque pesam e servem a momentos muito diferentes:
  *
- *   - rota `/api/v1/items/:id/description`: obrigaria a manter os 5,4 MB de texto
- *     residentes no processo, que roda com `MemoryMax=384M`, para servir dado que é
- *     constante entre deploys.
- *   - campo `description` no `ItemBrief`: ele vai embutido em toda resposta dos dois
- *     canais. Uma busca com `limit=100` passaria a gastar centenas de KB do contexto
- *     do agente no MCP, que é o produto principal do projeto.
+ *   - `items` (id, nome, slots, tipo e onde equipa) é o que a busca, os favoritos e o
+ *     inventário precisam para nomear e filtrar — baixado na primeira vez que alguém precisa;
+ *   - `untradable` é minúsculo e alimenta o filtro de "não dá para vender";
+ *   - `descriptions` é o grosso (5,4 MB) e só serve ao hover — carrega por último.
  *
- * Saídas (só o JSON: a Cloudflare comprime na entrega, então os `.br`/`.zst`/`.gz` que
- * existiam aqui para o `file_server precompressed` do Caddy viraram arquivos mortos —
- * servidos com o Content-Type errado, ocupando o orçamento de arquivos do deploy, e
- * custando 11 s de brotli em todo build para produzir byte a byte o que já existia):
+ * Saídas (só o JSON: a Cloudflare comprime na entrega):
+ *   public/generated/items.<sha8>.json         [[<id>, "<nome>", <slots>, <tipo>, "<posições>"], ...]
  *   public/generated/descriptions.<sha8>.json  { "<id>": "<descrição>" }
  *   public/generated/untradable.<sha8>.json    [<id>, ...]
  *   src/generated/catalogue.ts                 as URLs, com o hash embutido
@@ -38,6 +33,10 @@ import {
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
+// TypeScript direto do `src/`: o script roda com `tsx`, e a interface usa as mesmas listas de
+// rótulos. Uma cópia das regras em JS aqui seria duas definições que combinam até alguém
+// corrigir uma só.
+import { classify } from "../src/lib/catalogue/taxonomy.ts";
 import { isUntradable } from "./catalogue-rules.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -54,12 +53,25 @@ if (!existsSync(source)) {
 
 const catalogue = JSON.parse(readFileSync(source, "utf8"));
 
+// Colunar e ordenado por id: uma lista de objetos repetiria as chaves 14 mil vezes, e a ordem
+// fixa faz o hash só mudar quando o conteúdo muda. Tipo e posição saem da descrição, aqui no
+// build, para a busca poder filtrar sem baixar os 5 MB de descrições (ver `taxonomy.ts`).
+const items = [];
 const descriptions = {};
 const untradable = [];
 for (const [id, rec] of Object.entries(catalogue)) {
+  const { type, slots } = classify(rec.name, rec.description);
+  items.push([
+    Number(id),
+    rec.name,
+    typeof rec.slots === "number" ? rec.slots : null,
+    type,
+    slots.length > 0 ? slots.join(",") : null,
+  ]);
   if (rec.description) descriptions[id] = rec.description;
   if (isUntradable(rec.description)) untradable.push(Number(id));
 }
+items.sort((a, b) => a[0] - b[0]);
 untradable.sort((a, b) => a - b);
 
 mkdirSync(publicDir, { recursive: true });
@@ -68,11 +80,12 @@ mkdirSync(genDir, { recursive: true });
 const kb = (n) => `${(n / 1024).toFixed(0)} KB`;
 const keep = new Set();
 
+const itemsUrl = emit("items", items);
 const descriptionsUrl = emit("descriptions", descriptions);
 const untradableUrl = emit("untradable", untradable);
 
 // O nome carrega hash do conteúdo, então saída de execução anterior com catálogo
-// diferente ficaria para trás e subiria no tar para sempre. Varre em vez de apagar o
+// diferente ficaria para trás e subiria em todo deploy para sempre. Varre em vez de apagar o
 // diretório inteiro, senão o `emit` nunca encontraria nada para reaproveitar.
 for (const stale of readdirSync(publicDir)) {
   if (!keep.has(stale)) rmSync(join(publicDir, stale), { force: true });
@@ -81,6 +94,7 @@ for (const stale of readdirSync(publicDir)) {
 writeFileSync(
   join(genDir, "catalogue.ts"),
   "// GERADO por scripts/build-catalogue.mjs — não edite à mão.\n" +
+    `export const ITEMS_URL = ${JSON.stringify(itemsUrl)};\n` +
     `export const DESCRIPTIONS_URL = ${JSON.stringify(descriptionsUrl)};\n` +
     `export const UNTRADABLE_URL = ${JSON.stringify(untradableUrl)};\n`,
   "utf8",

@@ -1,10 +1,9 @@
 /**
  * A tabela dos favoritos.
  *
- * As colunas são a união do que Pechinchas e Variações mostram — "Preço agora", "Usual",
- * "Desconto", "Lojas", "Vendedor" de um lado; "Antes" e "Variação" do outro — mais as duas
- * que só existem aqui: "Alerta" e "Falta". Como em "Meu inventário", a pessoa escolhe o que
- * fica à vista, e a escolha sobrevive à sessão.
+ * Cada linha mostra a última consulta que a conexão fez ao site oficial — de quando ela é está
+ * escrito na coluna "Consultado", porque o preço não se atualiza sozinho: só itens com
+ * alerta entram no ciclo, e os outros esperam o botão "Consultar".
  *
  * "Falta" é a coluna que justifica a aba: diz o quanto ainda precisa andar para o alvo, e
  * ordenar por ela põe no topo o que está quase disparando.
@@ -21,19 +20,14 @@ import {
 } from "@tanstack/react-table";
 import { useMemo, useState } from "react";
 
-import type { ItemPrice } from "../api/types.js";
+import type { Server } from "../lib/server.js";
 import { describeAlert, gapToTarget, usesTarget } from "../lib/alerts.js";
-import {
-  TrendArrow,
-  discountVsSold,
-  makeNumCol,
-  makePctCol,
-  missingLast,
-  orUndefined,
-} from "../lib/columns.js";
-import { count, zeny } from "../lib/format.js";
+import { Trend, missingLast, orUndefined } from "../lib/columns.js";
+import { agoMs, count, zeny } from "../lib/format.js";
+import type { MarketCheck } from "../lib/market/checks.js";
 import { FAVORITES_COLUMNS_KEY, type Alert } from "../lib/persist.js";
 import { useColumnVisibility } from "../state/useColumnVisibility.js";
+import { useNow } from "../state/useNow.js";
 import { CopyButton } from "./CopyButton.js";
 import { DataTable } from "./DataTable.js";
 import { ItemCell, type ItemLabel } from "./ItemCell.js";
@@ -41,44 +35,37 @@ import { ItemLinksCell } from "./ItemLinksCell.js";
 import { StarButton } from "./StarButton.js";
 
 export interface FavoriteRow {
-  itemId: number;
-  /** Fica indefinido enquanto o primeiro ciclo não respondeu. */
-  price: ItemPrice | undefined;
+  item: ItemLabel;
+  /** A última consulta neste servidor; indefinida enquanto nunca foi consultado. */
+  check: MarketCheck | undefined;
   alert: Alert | undefined;
-  /** Do cruzamento com `/movers`: mediana no começo da janela e variação até hoje. */
-  before: number | null;
-  changePct: number | null;
+  /** Na fila ou sendo consultado agora. */
+  pending: "queued" | "current" | null;
 }
 
 const helper = createColumnHelper<FavoriteRow>();
-const numCol = makeNumCol(helper);
-const pctCol = makePctCol(helper);
 
-const DEFAULT_HIDDEN: VisibilityState = {
-  median: false,
-  stores: false,
-  units: false,
-  seller: false,
-  before: false,
-  sold: false,
-};
+const DEFAULT_HIDDEN: VisibilityState = { units: false, seller: false };
 
 interface Props {
   rows: FavoriteRow[];
+  server: Server;
   descriptions: Record<string, string>;
   onSelect: (itemId: number) => void;
-  /** Abre o modal de configuração do alerta. */
   onEditAlert: (itemId: number) => void;
+  onCheck: (itemId: number) => void;
+  /** A conexão está pronta e sem pausa: sem isso, "Consultar" só enfileiraria. */
+  canCheck: boolean;
 }
 
-export function FavoritesTable({ rows, descriptions, onSelect, onEditAlert }: Props) {
+export function FavoritesTable({ rows, server, descriptions, onSelect, onEditAlert, onCheck, canCheck }: Props) {
   // Abre pelo que está mais perto de disparar — a pergunta que traz a pessoa aqui.
   const [sorting, setSorting] = useState<SortingState>([{ id: "gap", desc: false }]);
   const [visibility, setVisibility] = useColumnVisibility(FAVORITES_COLUMNS_KEY, DEFAULT_HIDDEN);
 
   const columns = useMemo(
-    () => buildColumns({ descriptions, onSelect, onEditAlert }),
-    [descriptions, onSelect, onEditAlert],
+    () => buildColumns({ server, descriptions, onSelect, onEditAlert, onCheck, canCheck }),
+    [server, descriptions, onSelect, onEditAlert, onCheck, canCheck],
   );
 
   const table = useReactTable({
@@ -89,62 +76,43 @@ export function FavoritesTable({ rows, descriptions, onSelect, onEditAlert }: Pr
     onColumnVisibilityChange: setVisibility,
     getCoreRowModel: getCoreRowModel(),
     getSortedRowModel: getSortedRowModel(),
-    getRowId: (row) => String(row.itemId),
+    getRowId: (row) => String(row.item.itemId),
   });
 
   return <DataTable table={table} />;
 }
 
-/**
- * Item mínimo para a célula do nome enquanto o preço não chegou.
- *
- * Sem isto a tabela ficaria vazia até o primeiro ciclo responder, e quem acabou de colar um
- * id não veria nada acontecer.
- */
-const briefOf = (row: FavoriteRow): ItemLabel =>
-  row.price ?? { itemId: row.itemId, name: `#${row.itemId}`, slots: null };
-
 // `any` no segundo parâmetro é o que a própria TanStack recomenda para uma lista com
 // colunas de tipos de valor diferentes.
 function buildColumns(ctx: {
+  server: Server;
   descriptions: Record<string, string>;
   onSelect: (itemId: number) => void;
   onEditAlert: (itemId: number) => void;
+  onCheck: (itemId: number) => void;
+  canCheck: boolean;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
 }): ColumnDef<FavoriteRow, any>[] {
-  const { descriptions, onSelect, onEditAlert } = ctx;
+  const { server, descriptions, onSelect, onEditAlert, onCheck, canCheck } = ctx;
 
   return [
     helper.display({
       id: "estrela",
       header: "",
-      cell: ({ row }) => <StarButton itemId={row.original.itemId} />,
+      cell: ({ row }) => <StarButton itemId={row.original.item.itemId} />,
     }),
     helper.display({
       id: "ícone",
       header: "",
       cell: ({ row }) => (
-        <ItemCell
-          item={briefOf(row.original)}
-          descriptions={descriptions}
-          onSelect={onSelect}
-          part="icon"
-        />
+        <ItemCell item={row.original.item} descriptions={descriptions} onSelect={onSelect} part="icon" />
       ),
     }),
-    helper.accessor((row) => row.price?.name ?? `#${row.itemId}`, {
+    helper.accessor((row) => row.item.name, {
       id: "name",
       header: "Item",
       cell: ({ row }) => (
-        <>
-          <ItemCell
-            item={briefOf(row.original)}
-            descriptions={descriptions}
-            onSelect={onSelect}
-            part="name"
-          />
-          <TrendArrow pct={row.original.changePct} />
-        </>
+        <ItemCell item={row.original.item} descriptions={descriptions} onSelect={onSelect} part="name" />
       ),
     }),
 
@@ -152,8 +120,7 @@ function buildColumns(ctx: {
     // O aviso de "à venda" ordena como alvo zero — é o "a qualquer preço" — e não pelo alvo
     // antigo que ele guarda sem usar.
     helper.accessor(
-      (row) =>
-        orUndefined(row.alert && !usesTarget(row.alert.direction) ? 0 : row.alert?.targetPrice),
+      (row) => orUndefined(row.alert && !usesTarget(row.alert.direction) ? 0 : row.alert?.targetPrice),
       {
         id: "alert",
         header: "Alerta",
@@ -162,18 +129,27 @@ function buildColumns(ctx: {
       },
     ),
     // Negativo é "já passou do alvo", que é a boa notícia — daí `good: "down"`.
-    pctCol("gap", "Falta", (row) => gapToTarget(row.alert, row.price?.offers?.min), "down"),
+    helper.accessor((row) => orUndefined(gapToTarget(row.alert, row.check?.min)), {
+      id: "gap",
+      header: "Falta",
+      ...missingLast,
+      cell: (info) => <Trend value={info.getValue()} good="down" />,
+    }),
 
-    // --- agora, nas lojas abertas (herdado de Pechinchas) -----------------
-    numCol("now", "Preço agora", (row) => row.price?.offers?.min, zeny),
-    numCol("median", "Mediana", (row) => row.price?.offers?.median, zeny),
-    numCol("stores", "Lojas", (row) => row.price?.offers?.stores, count),
-    numCol("units", "Un. à venda", (row) => row.price?.offers?.units, count),
-    helper.accessor((row) => row.price?.cheapest[0]?.seller ?? "", {
+    // --- a última consulta ------------------------------------------------
+    helper.accessor((row) => orUndefined(row.check?.min), {
+      id: "now",
+      header: "Mais barato",
+      ...missingLast,
+      cell: ({ row }) => <PriceCell check={row.original.check} />,
+    }),
+    floorCol("stores", "Lojas", (check) => check.stores),
+    floorCol("units", "Un. à venda", (check) => check.units),
+    helper.accessor((row) => row.check?.seller ?? "", {
       id: "seller",
       header: "Vendedor",
       cell: ({ row }) => {
-        const seller = row.original.price?.cheapest[0]?.seller;
+        const seller = row.original.check?.seller;
         if (!seller) return "—";
         return (
           <span className="copyable">
@@ -183,28 +159,100 @@ function buildColumns(ctx: {
         );
       },
     }),
-
-    // --- o usual e a variação (herdado de Pechinchas e Variações) ---------
-    // `usual` é a média do que o site publica como JÁ VENDIDO. É outra medida que as
-    // colunas de cima, e não se somam a elas — ver o cabeçalho de `core/prices.ts`.
-    numCol("usual", "Usual", (row) => row.price?.market?.avg, zeny),
-    pctCol(
-      "discount",
-      "vs. média vendida",
-      (row) => discountVsSold(row.price?.offers?.min, row.price?.market?.avg),
-      "up",
-    ),
-    numCol("before", "Antes", (row) => row.before, zeny),
-    pctCol("change", "Variação", (row) => row.changePct, "up"),
-    numCol("sold", "Já vendidos", (row) => row.price?.market?.totalSold, count),
+    helper.accessor((row) => orUndefined(row.check?.at), {
+      id: "checkedAt",
+      header: "Consultado",
+      ...missingLast,
+      cell: ({ row }) => <CheckedCell row={row.original} onCheck={onCheck} canCheck={canCheck} />,
+    }),
 
     helper.display({
       id: "links",
       header: "Links",
-      cell: ({ row }) =>
-        row.original.price ? <ItemLinksCell links={row.original.price.links} /> : null,
+      cell: ({ row }) => (
+        <ItemLinksCell itemId={row.original.item.itemId} name={row.original.item.name} server={server} />
+      ),
     }),
   ];
+}
+
+/**
+ * Contagem que vira piso ("≥ 12") quando a página do site veio cortada: o menor preço
+ * continua exato, mas lojas e unidades além da página não foram vistas.
+ */
+function floorCol(id: string, header: string, pick: (check: MarketCheck) => number) {
+  return helper.accessor((row) => (row.check?.status === "ok" ? pick(row.check) : undefined), {
+    id,
+    header,
+    ...missingLast,
+    cell: ({ row }) => {
+      const { check } = row.original;
+      if (check?.status !== "ok") return "—";
+      return `${check.truncated ? "≥ " : ""}${count(pick(check))}`;
+    },
+  });
+}
+
+function PriceCell({ check }: { check: MarketCheck | undefined }) {
+  if (!check) return <span className="muted">—</span>;
+  switch (check.status) {
+    case "ok":
+      return <>{zeny(check.min)}</>;
+    case "empty":
+      return <span className="muted">ninguém vendendo</span>;
+    case "incomplete":
+      return (
+        <span className="muted" title="A busca trouxe mil anúncios de outros itens e este não apareceu entre eles.">
+          fora da página
+        </span>
+      );
+    case "unsearchable":
+      return (
+        <span className="muted" title={check.detail ?? undefined}>
+          não consultável
+        </span>
+      );
+    case "error":
+      return (
+        <span className="warn" title={check.detail ?? undefined}>
+          erro
+        </span>
+      );
+  }
+}
+
+function CheckedCell({
+  row,
+  onCheck,
+  canCheck,
+}: {
+  row: FavoriteRow;
+  onCheck: (itemId: number) => void;
+  canCheck: boolean;
+}) {
+  // Assina o relógio na célula: a linha reescreve "há 3 min" sozinha, sem a página inteira
+  // re-renderizar por causa disso.
+  useNow(30_000);
+  const at = row.check?.at;
+  const status =
+    row.pending === "current" ? "consultando…" : row.pending === "queued" ? "na fila" : at === undefined ? "nunca" : agoMs(at);
+
+  // A mesma forma em todo estado — texto e botão, sempre —, só com o texto trocando dentro de
+  // uma largura fixa. Trocar a célula inteira por "consultando…" mudava a largura da coluna a
+  // cada consulta, e a tabela toda pulava.
+  return (
+    <span className="checked-cell">
+      <span className="muted checked-status">{status}</span>
+      <button
+        className="ghost small"
+        onClick={() => onCheck(row.item.itemId)}
+        disabled={!canCheck || row.pending !== null}
+        title={canCheck ? "Consultar este item agora (usa uma consulta da cota)" : "Conecte-se ao mercado para consultar"}
+      >
+        Consultar
+      </button>
+    </span>
+  );
 }
 
 function AlertCell({ row, onEdit }: { row: FavoriteRow; onEdit: (itemId: number) => void }) {
@@ -216,10 +264,8 @@ function AlertCell({ row, onEdit }: { row: FavoriteRow; onEdit: (itemId: number)
     <button
       type="button"
       className={`alert-button ${state}`}
-      onClick={() => onEdit(row.itemId)}
-      title={
-        described ? `${described.long} — clique para editar` : "Configurar alerta de preço"
-      }
+      onClick={() => onEdit(row.item.itemId)}
+      title={described ? `${described.long} — clique para editar` : "Configurar alerta de preço"}
     >
       {alert && described ? `${alert.enabled ? "🔔" : "🔕"} ${described.short}` : "Configurar"}
     </button>

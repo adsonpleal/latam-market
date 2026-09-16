@@ -9,10 +9,11 @@
  * não mandar nenhum e a pessoa nunca descobrir.
  */
 
-import type { ItemPrice } from "../api/types.js";
-import type { Server } from "../api/client.js";
+import type { Server } from "./server.js";
 import { plural, zeny } from "./format.js";
-import { alertKey, type Alert, type Alerts, type Direction } from "./persist.js";
+import { isConclusive, type MarketCheck } from "./market/checks.js";
+import { linksFor } from "./market/url.js";
+import { parseServerItemKey, serverItemKey, type Alert, type Alerts, type Direction } from "./persist.js";
 
 /**
  * Aplica um patch, cuidando da regra de rearme.
@@ -69,11 +70,9 @@ export interface AlertDecision {
  * As duas direções são espelhos exatos, incluindo o "só reavisa se andou mais na mesma
  * direção" e o rearme ao voltar para o outro lado do alvo.
  *
- * `price` é sempre o **menor preço nas lojas abertas** (`offers.min`). Uma série só para as
- * duas direções: comprando, é quanto custa hoje; vendendo, é o preço que se precisa bater.
- * Usar a mediana na direção de alta deixaria o `lastAlertedPrice` ambíguo — marcador de
- * qual série? O histórico publicado pelo site (`market`) não entra: é outra medida, e não
- * se soma a esta (ver o cabeçalho de `core/prices.ts` no backend).
+ * `price` é sempre o **menor preço nas lojas abertas**, da última consulta ao site. Uma série
+ * só para as duas direções: comprando, é quanto custa hoje; vendendo, é o preço que se
+ * precisa bater.
  */
 export function evaluateAlert(alert: Alert, price: number | null): AlertDecision {
   if (alert.direction === "available") return evaluateAvailable(alert, price);
@@ -158,51 +157,70 @@ export function describeAlert(alert: Alert): { short: string; long: string } {
   return { short: short(target), long: long(target) };
 }
 
+/**
+ * Os favoritos com alerta ligado em QUALQUER servidor.
+ *
+ * O favorito é compartilhado entre FREYA e NIDHOGG: quem pergunta "tem alerta?" para decidir se
+ * o mantém quer saber dos dois mercados.
+ */
+export function favoritesWithAlert(alerts: Alerts, favorites: ReadonlySet<number>): Set<number> {
+  const out = new Set<number>();
+  for (const [key, alert] of Object.entries(alerts)) {
+    const parsed = parseServerItemKey(key);
+    if (parsed && alert.enabled && favorites.has(parsed.itemId)) out.add(parsed.itemId);
+  }
+  return out;
+}
+
 export interface AlertPlan {
   patches: Array<{ key: string; patch: Partial<Alert> }>;
   notifications: AlertNotification[];
 }
 
+/** Um item consultado, com o nome que vai no aviso. */
+export interface CheckedItem {
+  itemId: number;
+  name: string;
+  check: MarketCheck;
+}
+
 /**
- * Tudo o que um ciclo precisa fazer, decidido de uma vez e sem efeito colateral.
+ * Tudo o que as consultas pedem que se faça, decidido de uma vez e sem efeito colateral.
  *
  * Só avalia alertas do servidor ativo e de itens que ainda estão nos favoritos:
  * desfavoritar silencia o alerta sem apagá-lo, então reativá-lo é só favoritar de novo.
  *
- * `tradingAt` nulo é o servidor sem coleta carregada (acabou de subir), e aí todo item vem
- * sem oferta. Não há o que decidir: as direções de preço já calariam, mas o aviso de "à
- * venda" leria como "sumiu de todas as lojas", rearmaria e avisaria de novo o que já estava
- * à venda.
+ * Consulta inconclusiva (página cortada, erro) não decide nada. As direções de preço já
+ * calariam sem preço, mas o aviso de "à venda" leria a falta de preço como "sumiu de todas
+ * as lojas", rearmaria e avisaria de novo o que já estava à venda.
  */
 export function planAlerts(
   server: Server,
   alerts: Alerts,
   favorites: Set<number>,
-  prices: ItemPrice[],
-  tradingAt: number | null,
+  checked: CheckedItem[],
 ): AlertPlan {
   const plan: AlertPlan = { patches: [], notifications: [] };
-  if (tradingAt === null) return plan;
 
-  for (const price of prices) {
-    if (!favorites.has(price.itemId)) continue;
+  for (const { itemId, name, check } of checked) {
+    if (!favorites.has(itemId) || !isConclusive(check)) continue;
 
-    const key = alertKey(server, price.itemId);
+    const key = serverItemKey(server, itemId);
     const alert = alerts[key];
     if (!alert || !alert.enabled) continue;
 
-    const min = price.offers?.min ?? null;
+    const { min } = check;
     const { fire, patch } = evaluateAlert(alert, min);
     if (patch) plan.patches.push({ key, patch });
     if (fire && min !== null) {
       plan.notifications.push({
-        itemId: price.itemId,
-        name: price.name,
-        title: `${WORDING[alert.direction].title}: ${price.name}`,
+        itemId,
+        name,
+        title: `${WORDING[alert.direction].title}: ${name}`,
         body: usesTarget(alert.direction)
           ? `Mín ${zeny(min)} — alvo ${zeny(alert.targetPrice)} (${server})`
           : `Mín ${zeny(min)} (${server})`,
-        click: price.links.market,
+        click: linksFor(itemId, name, server).market,
       });
     }
   }

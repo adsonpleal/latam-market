@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { plural, upcoming, zeny } from "../format.js";
+import { duration, plural, zeny } from "../format.js";
 
 /**
  * A concordância existe porque a alternativa preguiçosa — "1 alerta(s) ligado(s)" — é o que
@@ -28,27 +28,17 @@ describe("plural", () => {
   });
 });
 
-describe("upcoming", () => {
-  const emSegundos = (min: number) => Date.now() / 1000 + min * 60;
-
-  it("conta para a frente", () => {
-    expect(upcoming(emSegundos(12))).toBe("em 12 min");
-    expect(upcoming(emSegundos(120))).toBe("em 2 h");
-  });
-
-  /** Coleta atrasada não pode virar "em -3 min", que não diz nada a ninguém. */
-  it("o que já passou vira 'a qualquer momento'", () => {
-    expect(upcoming(emSegundos(-3))).toBe("a qualquer momento");
-    expect(upcoming(emSegundos(0.5))).toBe("a qualquer momento");
-  });
-
-  it("sem previsão, diz isso", () => {
-    expect(upcoming(null)).toBe("sem previsão");
+describe("duration", () => {
+  it("escolhe a unidade que se lê", () => {
+    expect(duration(45_000)).toBe("45 s");
+    expect(duration(3 * 60_000)).toBe("3 min");
+    expect(duration(60 * 60_000)).toBe("1 h");
+    expect(duration(65 * 60_000)).toBe("1 h 5 min");
   });
 });
 
 describe("zeny", () => {
-  /** A regra do backend é "nada de inventar valor": 0 leria como "não vale nada". */
+  /** A regra é "nada de inventar valor": 0 leria como "não vale nada". */
   it("null vira travessão, nunca zero", () => {
     expect(zeny(null)).toBe("—");
     expect(zeny(undefined)).toBe("—");

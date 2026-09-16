@@ -23,9 +23,11 @@ export interface FavoritesApi {
   has: (itemId: number) => boolean;
   set: Set<number>;
   toggle: (itemId: number) => void;
-  /** Devolve `false` quando o id é inválido ou já estava lá. Para o campo "colar um id". */
-  add: (itemId: number) => boolean;
+  /** Vários de uma vez, numa escrita só. */
+  addMany: (itemIds: readonly number[]) => void;
   remove: (itemId: number) => void;
+  /** Tira todos os que `keep` não segurar, numa escrita só. */
+  removeAllExcept: (keep: (itemId: number) => boolean) => void;
 }
 
 export function useFavorites(): FavoritesApi {
@@ -33,17 +35,28 @@ export function useFavorites(): FavoritesApi {
 
   const asSet = useMemo(() => new Set(ids), [ids]);
 
-  const add = useCallback(
-    (itemId: number): boolean => {
-      if (!Number.isInteger(itemId) || itemId <= 0) return false;
-      let added = false;
+  /**
+   * Uma escrita só, e não uma por item: "favoritar todos" numa busca de mil resultados seriam
+   * mil gravações no `localStorage` e mil eventos para cada estrela da tela.
+   */
+  const addMany = useCallback(
+    (itemIds: readonly number[]) => {
       write((prev) => {
-        if (prev.includes(itemId)) return prev;
-        added = true;
+        const present = new Set(prev);
+        const fresh = [...new Set(itemIds)].filter((id) => Number.isInteger(id) && id > 0 && !present.has(id));
         // No começo: quem acabou de favoritar quer ver o item, não procurá-lo no fim.
-        return [itemId, ...prev];
+        return fresh.length === 0 ? prev : [...fresh, ...prev];
       });
-      return added;
+    },
+    [write],
+  );
+
+  const removeAllExcept = useCallback(
+    (keep: (itemId: number) => boolean) => {
+      write((prev) => {
+        const next = prev.filter(keep);
+        return next.length === prev.length ? prev : next;
+      });
     },
     [write],
   );
@@ -60,12 +73,12 @@ export function useFavorites(): FavoritesApi {
   const toggle = useCallback(
     (itemId: number) => {
       if (asSet.has(itemId)) remove(itemId);
-      else add(itemId);
+      else addMany([itemId]);
     },
-    [asSet, add, remove],
+    [asSet, addMany, remove],
   );
 
   const has = useCallback((itemId: number) => asSet.has(itemId), [asSet]);
 
-  return { ids, has, set: asSet, toggle, add, remove };
+  return { ids, has, set: asSet, toggle, addMany, remove, removeAllExcept };
 }

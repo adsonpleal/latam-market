@@ -45,8 +45,7 @@ export function Dropzone({ onFile, busy }: Props) {
         Ou clique para escolher. O replay fica em <code>Ragnarok/Replay</code>.
       </p>
       <p className="dropzone-privacy">
-        O arquivo é enviado ao servidor para ser lido. Ele contém o nome do seu
-        personagem, o mapa e o nível — nada é gravado depois da resposta.
+        O arquivo é lido aqui mesmo, no seu navegador — não é enviado para lugar nenhum.
       </p>
     </div>
   );

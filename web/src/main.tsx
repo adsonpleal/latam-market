@@ -8,8 +8,8 @@ import "./styles.css";
 const root = document.getElementById("root");
 if (!root) throw new Error("#root não existe no index.html");
 
-// BrowserRouter (e não HashRouter) porque o Caddy faz `try_files {path} /index.html`:
-// qualquer rota desconhecida cai no index e o roteamento acontece aqui.
+// BrowserRouter (e não HashRouter) porque o Cloudflare Pages devolve o `index.html` para
+// qualquer rota que não é arquivo (não há `404.html`): o roteamento acontece aqui.
 createRoot(root).render(
   <StrictMode>
     <BrowserRouter>

@@ -1,4 +1,4 @@
-/** O canal do ntfy. A cadência de checagem não se configura — ver `lib/schedule.ts`. */
+/** O canal do ntfy e o intervalo de checagem. A cota que o intervalo pressiona está em `lib/market/budget.ts`. */
 
 import { useCallback } from "react";
 

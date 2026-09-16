@@ -4,9 +4,9 @@ import { useEffect } from "react";
  * O comportamento comum de tudo que abre por cima da página: fecha no Esc e trava a
  * rolagem de fundo enquanto está aberto.
  *
- * Os dois andam sempre juntos — o painel de item e o diálogo do MCP queriam exatamente
- * o mesmo par, e mantê-lo copiado significava que a compensação da barra de rolagem
- * (a parte fácil de errar) existia em dois lugares.
+ * Os dois andam sempre juntos — o painel de item e os diálogos queriam exatamente o mesmo
+ * par, e mantê-lo copiado significava que a compensação da barra de rolagem (a parte fácil
+ * de errar) existia em mais de um lugar.
  */
 export function useDismissable(onClose: () => void): void {
   useEffect(() => {

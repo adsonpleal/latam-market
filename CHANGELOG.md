@@ -3,6 +3,47 @@
 Mais recente primeiro. A seção do topo é a fonte do post de novidades no Discord
 (`tools/post-novidades.mjs`), então escreva pensando em quem vai ler lá.
 
+## 0.14.0 — 2026-09-15
+
+- **O site oficial pôs a proteção da Cloudflare na frente do mercado, e a coleta acabou.**
+  Todos os IPs que buscavam os preços foram bloqueados, e não há como um servidor continuar
+  lendo o mercado. Sem dado novo entrando, o que dependia dele saiu: as abas **Pechinchas**,
+  **Variações** e **Estado**, as colunas de preço da **Buscar** e do **Meu inventário**, e o
+  **servidor MCP**. O histórico coletado até aqui não vai voltar à tela — congelado, ele
+  mostraria preço velho com cara de atual.
+- **Os alertas de preço continuam, agora consultando o site pelo seu próprio navegador.** Na
+  aba **Favoritos** você abre uma aba auxiliar no site oficial e clica num favorito
+  ("bookmarklet") que arrasta para a barra do navegador. É essa aba que busca os preços da
+  sua lista — **do seu computador e com o seu IP**, sem passar por servidor nosso. As
+  instruções de conexão explicam isso antes da primeira consulta, e a tela mostra quantas
+  consultas foram feitas nos últimos 15 minutos e lista as últimas.
+- **O ritmo é escolhido por você, com um limite de segurança.** Dá para checar a cada 5, 10,
+  15, 30 ou 60 minutos, e a tela recomenda até quantos itens vigiar em cada intervalo. As
+  consultas saem uma de cada vez, espaçadas de 5 segundos, com teto de 30 a cada 15 minutos —
+  os números vêm do que foi medido quando o site bloqueava a coleta.
+- **Se o site bloquear (HTTP 429), você vê na hora.** Uma faixa vermelha diz a que horas
+  aconteceu e quanto falta para voltar, e as consultas param sozinhas: nada de insistir, que
+  é justamente o que transforma um bloqueio de 15 minutos em um de horas. Quem usa o push do
+  ntfy recebe um aviso de que a verificação foi pausada. Se o Cloudflare pedir a verificação
+  do "não sou um robô", a tela explica o que fazer.
+- **A aba Buscar continua, agora sem preço e com o catálogo inteiro.** Procure pelo nome ou
+  pelo ID, filtre por tipo (katar, carta, visual de topo…) e favorite com a estrela — ou clique
+  em **Favoritar todos** para levar a busca inteira. Ela roda no próprio navegador, então
+  responde a cada tecla e não gasta consulta ao site do mercado.
+- **Em Favoritos, "Atualizar todos os preços" consulta a lista inteira de uma vez.** Itens de
+  nome parecido saem numa consulta só: favoritar as cartas de um monstro e atualizar custa uma
+  requisição, e não uma por carta. E um botão **Limpar favoritos** esvazia a lista —
+  perguntando antes se você quer manter os itens que têm alerta.
+- **Meu inventário continua igual no que importa**: abre o replay e vê tudo o que o
+  personagem carrega, com filtros, busca por nome e exportação em CSV. O que saiu foram as
+  colunas de preço e o total em zeny. Cada linha ganhou uma estrela, para mandar o item
+  direto para a lista de acompanhamento.
+- **O replay não sai mais do seu computador.** Ele é lido ali mesmo, no navegador — antes
+  o arquivo ia até o nosso servidor para ser lido.
+- **O site agora é só a página, sem servidor por trás.** A API pública (`/api/v1/...`) foi
+  desligada junto com o MCP: sem dado de mercado para servir, o que sobrava dela — buscar
+  item e ler replay — passou a rodar no navegador de quem usa.
+
 ## 0.13.0 — 2026-09-13
 
 - **O alerta dos Favoritos agora avisa quando o item aparece à venda, a qualquer preço.** É

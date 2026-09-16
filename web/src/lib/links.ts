@@ -1,4 +1,4 @@
-/** Endereços externos fixos, num lugar só — aparecem no rodapé e no diálogo do MCP. */
+/** Endereços externos fixos, num lugar só — aparecem no rodapé. */
 export const EXTERNAL = {
   tools: "https://latam-tools.com.br/",
   discord: "https://discord.gg/JCXTqqWq9Q",

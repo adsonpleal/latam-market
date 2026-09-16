@@ -1,54 +1,50 @@
-import { useCallback, useEffect, useState } from "react";
-import { NavLink, Route, Routes, useSearchParams } from "react-router-dom";
+import { useCallback, useEffect } from "react";
+import { Navigate, NavLink, Route, Routes, useSearchParams } from "react-router-dom";
 
 import { ItemDrawer } from "./components/ItemDrawer.js";
-import { McpDialog } from "./components/McpDialog.js";
 import { EXTERNAL } from "./lib/links.js";
+import { activePause } from "./lib/market/quarantine.js";
+import { BuscarPage } from "./pages/Buscar.js";
 import { FavoritosPage } from "./pages/Favoritos.js";
-import { MercadoPage } from "./pages/Mercado.js";
-import { PechinchasPage } from "./pages/Pechinchas.js";
 import { ReplayPage } from "./pages/Replay.js";
-import { StatusPage } from "./pages/Status.js";
-import { VariacoesPage } from "./pages/Variacoes.js";
 import { useCatalogue } from "./state/useCatalogue.js";
 import { useFavoriteWatch } from "./state/useFavoriteWatch.js";
 import { useReplay } from "./state/useReplay.js";
 import { SERVERS, useServer } from "./state/useServer.js";
-import type { Server } from "./api/client.js";
+import type { Server } from "./lib/server.js";
 
 export function App() {
   const catalogue = useCatalogue();
   const replay = useReplay(catalogue.loadDescriptions);
   const [params, setParams] = useSearchParams();
-  const [mcpOpen, setMcpOpen] = useState(false);
   const { server, change } = useServer();
 
   // Mora aqui pelo mesmo motivo do `useReplay` acima: a rota desmonta ao navegar. O
   // argumento completo está no cabeçalho de `useFavoriteWatch`.
   const watch = useFavoriteWatch(server);
+  // Sem relógio próprio: o ponto de exclamação some no próximo render depois de a pausa vencer,
+  // e o laço re-renderiza o `App` a cada consulta.
+  const navPause = activePause(watch.quarantine, Date.now());
 
   /**
-   * Trocar de servidor troca todos os preços da tela.
+   * Trocar de servidor troca o mercado das consultas e os alvos dos alertas.
    *
-   * O replay é reprecificado com o mesmo arquivo — nada de pedir o upload de novo. As
-   * demais páginas recebem `server` nas dependências dos seus efeitos e refazem a
-   * busca sozinhas.
+   * O inventário não depende mais de servidor: sem preço, a leitura do replay é a mesma nos
+   * dois.
    */
   const changeServer = useCallback(
     (next: Server) => {
-      if (next === server) return;
-      change(next);
-      replay.reprice();
+      if (next !== server) change(next);
     },
-    [server, change, replay],
+    [server, change],
   );
 
   /**
    * O detalhe é `?item=<id>` em vez de uma rota própria.
    *
-   * Como parâmetro de busca ele funciona igual como link compartilhável (o MCP e o
-   * Discord podem apontar para `/?item=501`), mas não desmonta a página de baixo — com
-   * uma rota `/item/:id`, abrir um resultado da busca jogaria a busca fora.
+   * Como parâmetro de busca ele funciona igual como link compartilhável (o Discord pode
+   * apontar para `/?item=501`), mas não desmonta a página de baixo — com uma rota
+   * `/item/:id`, abrir um item da tabela jogaria a tabela fora.
    */
   const raw = params.get("item");
   const selected = raw === null ? null : Number(raw);
@@ -72,7 +68,7 @@ export function App() {
     });
   }, [setParams]);
 
-  // Quem chega direto por link precisa da descrição sem ter passado por upload.
+  // Quem chega direto por link precisa da descrição sem ter carregado replay nenhum.
   useEffect(() => {
     if (selected !== null) void catalogue.loadDescriptions();
   }, [selected, catalogue]);
@@ -84,14 +80,16 @@ export function App() {
         <NavLink to="/" end>
           Meu inventário
         </NavLink>
-        <NavLink to="/mercado">Buscar</NavLink>
-        <NavLink to="/pechinchas">Pechinchas</NavLink>
-        <NavLink to="/variacoes">Variações</NavLink>
+        <NavLink to="/buscar">Buscar</NavLink>
         <NavLink to="/favoritos">
           Favoritos
           {/* Os que dispararam vêm primeiro: é o que a pessoa precisa ver. Sem nenhum, a
               contagem da lista já diz o que há para acompanhar. */}
-          {watch.fired.length > 0 ? (
+          {navPause?.kind === "blocked" || navPause?.kind === "challenge" ? (
+            <span className="nav-count is-blocked" title="Consultas pausadas: o site recusou">
+              !
+            </span>
+          ) : watch.fired.length > 0 ? (
             <span className="nav-count is-fired">{watch.fired.length}</span>
           ) : (
             watch.favorites.ids.length > 0 && (
@@ -99,9 +97,8 @@ export function App() {
             )
           )}
         </NavLink>
-        <NavLink to="/status">Estado</NavLink>
 
-        <label className="server-picker" title="Servidor do mercado">
+        <label className="server-picker" title="Servidor do mercado consultado pelos favoritos">
           <select value={server} onChange={(e) => changeServer(e.target.value as Server)}>
             {SERVERS.map((s) => (
               <option key={s} value={s}>
@@ -110,41 +107,27 @@ export function App() {
             ))}
           </select>
         </label>
-
-        <button className="mcp-button" onClick={() => setMcpOpen(true)} title="Conectar uma IA ao mercado">
-          ✨ <span>MCP</span>
-        </button>
       </nav>
-
-      {mcpOpen && <McpDialog onClose={() => setMcpOpen(false)} />}
 
       <main>
         <Routes>
-          <Route
-            path="/"
-            element={<ReplayPage catalogue={catalogue} replay={replay} onSelectItem={select} server={server} />}
-          />
-          <Route path="/mercado" element={<MercadoPage catalogue={catalogue} onSelectItem={select} server={server} />} />
-          <Route
-            path="/pechinchas"
-            element={<PechinchasPage catalogue={catalogue} onSelectItem={select} server={server} />}
-          />
-          <Route
-            path="/variacoes"
-            element={<VariacoesPage catalogue={catalogue} onSelectItem={select} server={server} />}
-          />
+          <Route path="/" element={<ReplayPage catalogue={catalogue} replay={replay} onSelectItem={select} server={server} />} />
           <Route
             path="/favoritos"
             element={
-              <FavoritosPage
-                catalogue={catalogue}
-                watch={watch}
-                onSelectItem={select}
-                server={server}
-              />
+              <FavoritosPage catalogue={catalogue} watch={watch} onSelectItem={select} server={server} />
             }
           />
-          <Route path="/status" element={<StatusPage server={server} />} />
+          <Route
+            path="/buscar"
+            element={<BuscarPage catalogue={catalogue} onSelectItem={select} server={server} />}
+          />
+          {/* As abas que viviam da coleta do servidor. Links antigos (Discord, favoritos do
+              navegador) caem no lugar mais próximo do que ofereciam, em vez de "não encontrada". */}
+          <Route path="/mercado" element={<Navigate to="/buscar" replace />} />
+          <Route path="/pechinchas" element={<Navigate to="/favoritos" replace />} />
+          <Route path="/variacoes" element={<Navigate to="/favoritos" replace />} />
+          <Route path="/status" element={<Navigate to="/" replace />} />
           <Route path="*" element={<NotFound />} />
         </Routes>
       </main>
@@ -153,6 +136,7 @@ export function App() {
         <ItemDrawer
           key={`${server}-${selected}`}
           itemId={selected}
+          server={server}
           description={catalogue.descriptions[String(selected)]}
           onClose={close}
         />
@@ -186,7 +170,8 @@ export function App() {
           </a>
         </div>
         <div className="footer-note">
-          Dados do mercado de jogadores de {SERVERS.join(" e ")}. Ragnarok Online © Gravity
+          Preços consultados no site oficial do mercado de {SERVERS.join(" e ")}, a partir do seu
+          navegador. Ragnarok Online © Gravity
           Co., Ltd. &amp; Lee Myoungjin. Todos os ativos, dados e imagens pertencem aos seus
           respectivos donos. Não é um serviço oficial.
         </div>

@@ -3,16 +3,16 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Interface web do mercado do RO LATAM: sobe um .rrf e mostra o que ele vale",
+  "description": "Mercado RO LATAM: inventário de replay e favoritos com alerta de preço, tudo no navegador",
   "scripts": {
-    "catalogue": "node scripts/build-catalogue.mjs",
-    "predev": "node scripts/build-catalogue.mjs",
+    "catalogue": "tsx scripts/build-catalogue.mjs",
+    "predev": "pnpm catalogue",
     "dev": "vite",
-    "prebuild": "node scripts/build-catalogue.mjs",
+    "prebuild": "pnpm catalogue",
     "build": "tsc --noEmit && vite build",
-    "pretypecheck": "node scripts/build-catalogue.mjs",
+    "pretypecheck": "pnpm catalogue",
     "typecheck": "tsc --noEmit",
-    "pretest": "node scripts/build-catalogue.mjs",
+    "pretest": "pnpm catalogue",
     "test": "vitest run",
     "preview": "vite preview"
   },
@@ -20,7 +20,8 @@
     "@tanstack/react-table": "^8.21.3",
     "react": "^19.1.1",
     "react-dom": "^19.1.1",
-    "react-router-dom": "^7.9.3"
+    "react-router-dom": "^7.9.3",
+    "rrfparser": "^1.2.0"
   },
   "devDependencies": {
     "@types/node": "^22.10.2",
@@ -28,6 +29,7 @@
     "@types/react-dom": "^19.1.9",
     "@vitejs/plugin-react": "^5.0.4",
     "jsdom": "^26.1.0",
+    "tsx": "^4.23.1",
     "typescript": "^5.7.2",
     "vite": "^7.1.7",
     "vitest": "^4.1.11"

@@ -13,7 +13,7 @@
 
 import { useState } from "react";
 
-import type { Server } from "../api/client.js";
+import type { Server } from "../lib/server.js";
 import { usesTarget } from "../lib/alerts.js";
 import { zeny } from "../lib/format.js";
 import type { Alert, Direction } from "../lib/persist.js";

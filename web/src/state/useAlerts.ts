@@ -7,9 +7,9 @@
 
 import { useCallback } from "react";
 
-import type { Server } from "../api/client.js";
+import type { Server } from "../lib/server.js";
 import { applyAlertPatch } from "../lib/alerts.js";
-import { ALERTS_KEY, alertKey, parseAlerts, type Alert, type Alerts } from "../lib/persist.js";
+import { ALERTS_KEY, serverItemKey, parseAlerts, type Alert, type Alerts } from "../lib/persist.js";
 import { usePersistent } from "./usePersistent.js";
 
 const EMPTY: Alerts = {};
@@ -58,13 +58,13 @@ export function useAlerts(): AlertsApi {
 
   const set = useCallback(
     (server: Server, itemId: number, patch: Partial<Alert>) =>
-      patchMany([{ key: alertKey(server, itemId), patch }], true),
+      patchMany([{ key: serverItemKey(server, itemId), patch }], true),
     [patchMany],
   );
 
   const remove = useCallback(
     (server: Server, itemId: number) => {
-      const key = alertKey(server, itemId);
+      const key = serverItemKey(server, itemId);
       write((prev) => {
         if (!(key in prev)) return prev;
         const { [key]: _removido, ...rest } = prev;
@@ -74,7 +74,7 @@ export function useAlerts(): AlertsApi {
     [write],
   );
 
-  const get = useCallback((server: Server, itemId: number) => all[alertKey(server, itemId)], [all]);
+  const get = useCallback((server: Server, itemId: number) => all[serverItemKey(server, itemId)], [all]);
 
   const enabledCount = useCallback(
     (server: Server) =>

@@ -14,9 +14,9 @@
  *    dispara na janela que escreveu, então sem isto quem clicou na estrela seria o único
  *    a não ver a mudança.
  *
- * Por que não o padrão de estado de módulo que `api/client.ts` usa para o servidor ativo:
- * lá o consumidor principal não é o React (toda requisição carimba `activeServer`, inclusive
- * fora de componente). Aqui é o oposto — nada fora do React lê isto, e o que se precisa é
+ * Por que não o padrão de estado de módulo que `lib/server.ts` usa para o servidor ativo:
+ * lá o consumidor principal não é o React (o servidor ativo é lido na montagem de cada URL do
+ * mercado, fora de componente). Aqui é o oposto — nada fora do React lê isto, e o que se precisa é
  * exatamente re-renderizar vários pontos juntos.
  */
 
@@ -28,6 +28,14 @@ export interface Persistent<T> {
   value: T;
   /** Aceita valor ou atualizador. O atualizador é obrigatório para escritas em sequência. */
   set: (next: T | ((prev: T) => T)) => void;
+  /**
+   * O valor atual, sem esperar o render.
+   *
+   * Para quem lê fora do React — um laço assíncrono que acabou de gravar e precisa decidir o
+   * passo seguinte a partir do que gravou. `value` só chega no render seguinte, e quem
+   * decidisse por ele repetiria a decisão anterior.
+   */
+  peek: () => T;
 }
 
 export function usePersistent<T>(
@@ -118,7 +126,9 @@ export function usePersistent<T>(
     [key],
   );
 
-  return { value, set };
+  const peek = useCallback(() => valueRef.current, []);
+
+  return { value, set, peek };
 }
 
 function read<T>(key: string, fallback: T, parse: (raw: string | null) => T | null): T {

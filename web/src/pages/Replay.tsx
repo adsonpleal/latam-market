@@ -1,46 +1,31 @@
 import { useMemo, useState } from "react";
 
+import type { Server } from "../lib/server.js";
 import { Dropzone } from "../components/Dropzone.js";
+import { PageTitle } from "../components/PageTitle.js";
 import { FilterBar } from "../components/FilterBar.js";
 import { ItemsTable } from "../components/ItemsTable.js";
-import { SellCandidates } from "../components/SellCandidates.js";
 import { SummaryHeader } from "../components/SummaryHeader.js";
 import { download, toCsv } from "../lib/csv.js";
 import { itemLabel, stamp } from "../lib/format.js";
-import { plainDescription } from "../lib/description.js";
+import { linksFor } from "../lib/market/url.js";
 import {
   ALL_ORIGINS,
   applyFilters,
-  countHiddenUnpriced,
-  countUnpriced,
   flatten,
-  sumValue,
   ORIGIN_LABEL,
   type Filters,
   type Origin,
   type Row,
 } from "../lib/rows.js";
 import type { Catalogue } from "../state/useCatalogue.js";
-import { useMoverChanges } from "../state/useMovers.js";
 import type { ReplayController } from "../state/useReplay.js";
 
 const DEFAULT_FILTERS: Filters = {
-  // Ligadas por padrão são exatamente as origens que o backend soma em `totalValue` — é o
-  // que faz "Selecionado" e "Total do replay" começarem iguais.
-  //
-  // Derivado em vez de listado à mão: `ALL_ORIGINS` menos `unidentified` É o conjunto que
-  // o backend conta, porque `Origin` é `ItemOrigin | "unidentified"` e `ItemOrigin` é a
-  // lista que entra no total. Um container novo no backend entra aqui sozinho; escrito à
-  // mão, as duas cifras começariam diferentes e ninguém saberia por quê.
+  // Os containers não identificados ficam de fora de saída: o decodificador ainda não sabe o
+  // que são, e misturá-los com a mochila confundiria mais que ajudaria.
   origins: new Set<Origin>(ALL_ORIGINS.filter((o) => o !== "unidentified")),
-  hideUntradable: true,
-  // Os limites começam desligados pelo mesmo motivo acima: qualquer piso ou teto ligado de
-  // saída faria "Selecionado" abrir menor que "Total do replay", e a diferença pareceria
-  // um erro de conta em vez de um filtro.
-  hideUnpriced: false,
-  minTotal: null,
-  maxStores: null,
-  minSold: null,
+  hideUntradable: false,
   search: "",
 };
 
@@ -51,59 +36,33 @@ export function ReplayPage({
   server,
 }: {
   catalogue: Catalogue;
-  /** Mora no App: sair para "Buscar" e voltar não pode perder o replay carregado. */
+  /** Mora no App: sair para "Favoritos" e voltar não pode perder o replay carregado. */
   replay: ReplayController;
   onSelectItem: (itemId: number) => void;
-  server: string;
+  /** Só para os links de lojas: o inventário em si não depende de servidor. */
+  server: Server;
 }) {
   const { state, upload, clear } = replay;
   const [filters, setFilters] = useState<Filters>(DEFAULT_FILTERS);
-  const trends = useMoverChanges(server, state.kind === "loaded");
 
-  const rows = useMemo(
-    () => (state.kind === "loaded" ? flatten(state.valuation) : []),
-    [state],
-  );
+  const rows = useMemo(() => (state.kind === "loaded" ? flatten(state.inventory) : []), [state]);
 
   /**
    * "Não dá para vender", em um lugar só: alimenta o filtro, a coluna e o CSV.
    *
-   * São dois sinais somados, porque nenhum dos dois basta sozinho:
-   *
-   *  1. a descrição do cliente dizer "Intransferível" (1.202 itens);
-   *  2. o item nunca ter aparecido no mercado em semanas de coleta (8.919 itens).
-   *
-   * O (2) entrou depois de o Emblema do Éden passar pelo filtro: ele é preso à conta
-   * no jogo, mas a descrição não diz isso e a tabela do GRF marca os oito flags como
-   * liberados. Nenhuma fonte que temos o classifica — só a ausência dele no mercado.
-   *
-   * O (2) parece largo (62% do catálogo), e a medição diz que não é perigoso: dos
-   * 4.184 itens com anúncio ativo agora, a união esconde 7 — exatamente os mesmos 7
-   * que a descrição já escondia. Ou seja, "nunca visto à venda" não tira da tabela
-   * nada que dê para vender hoje, que é a única garantia que importa aqui.
+   * Vem da descrição do cliente dizer "Intransferível". Até a coleta acabar havia um segundo
+   * sinal — o item nunca ter aparecido no mercado —, que pegava casos como o Emblema do
+   * Éden; sem coleta não há mais como sabê-lo, e o filtro volta a ser só a descrição.
    */
-  const isUnsellable = useMemo(() => {
-    const byDescription = catalogue.untradableFailed
-      ? () => false
-      : (row: Row) => catalogue.untradable.has(row.item.itemId);
-    return (row: Row) => byDescription(row) || !row.item.inMarket;
-  }, [catalogue.untradable, catalogue.untradableFailed]);
-
-  const visible = useMemo(
-    () => applyFilters(rows, filters, isUnsellable),
-    [rows, filters, isUnsellable],
+  const isUnsellable = useMemo(
+    () =>
+      catalogue.untradableFailed ? () => false : (row: Row) => catalogue.untradable.has(row.item.itemId),
+    [catalogue.untradable, catalogue.untradableFailed],
   );
 
-  const unsellableCount = useMemo(
-    () => rows.filter(isUnsellable).length,
-    [rows, isUnsellable],
-  );
-
-  const unpricedCount = useMemo(
-    () => countHiddenUnpriced(rows, filters, isUnsellable),
-    [rows, filters, isUnsellable],
-  );
-
+  const visible = useMemo(() => applyFilters(rows, filters, isUnsellable), [rows, filters, isUnsellable]);
+  const visibleUnits = useMemo(() => visible.reduce((n, row) => n + row.qty, 0), [visible]);
+  const unsellableCount = useMemo(() => rows.filter(isUnsellable).length, [rows, isUnsellable]);
   const availableOrigins = useMemo(
     () => ALL_ORIGINS.filter((origin) => rows.some((row) => row.origin === origin)),
     [rows],
@@ -112,11 +71,13 @@ export function ReplayPage({
   if (state.kind === "idle" || state.kind === "loading" || state.kind === "error") {
     return (
       <section className="page">
-        <h1>Quanto vale o seu inventário?</h1>
-        <p className="lead">
-          Suba um replay do Ragnarok LATAM e veja, item por item, por quanto ele está
-          sendo vendido no mercado de jogadores de {server}.
-        </p>
+        <PageTitle title="Meu inventário">
+          <p>
+            Abra um replay do Ragnarok LATAM e veja tudo o que o personagem carrega — mochila,
+            carrinho, equipamento e os armazéns que estavam abertos na gravação.
+          </p>
+          <p>Favorite um item com a estrela para acompanhar o preço dele na aba Favoritos.</p>
+        </PageTitle>
         <Dropzone onFile={(file) => void upload(file)} busy={state.kind === "loading"} />
         {state.kind === "error" && <p className="error">{state.message}</p>}
       </section>
@@ -124,56 +85,36 @@ export function ReplayPage({
   }
 
   const exportCsv = (): void => {
-    const headers = [
-      "id", "item", "origem", "qtd", "refino", "cartas",
-      "menor_oferta", "mediana_oferta", "lojas", "unidades_a_venda", "total",
-      "media_vendida", "min_vendido", "max_vendido", "ja_vendidos",
-      "vendivel", "visto_no_mercado", "aviso", "divine_pride", "mercado",
-    ];
-    const body = visible.map((row) => [
-      row.item.itemId,
-      itemLabel(row.item.name, row.refine, row.item.slots),
-      ORIGIN_LABEL[row.origin],
-      row.qty,
-      row.refine,
-      row.cardNames.join(" / "),
-      // Número cru: formatado, a planilha trataria a coluna como texto.
-      row.unitPrice,
-      row.unitMedian,
-      row.stores,
-      row.units,
-      row.total,
-      row.market?.avg ?? null,
-      row.market?.min ?? null,
-      row.market?.max ?? null,
-      row.market?.totalSold ?? null,
-      isUnsellable(row) ? "não" : "sim",
-      row.item.inMarket ? "sim" : "nunca",
-      plainDescription(row.priceCaveat ?? undefined),
-      row.item.links.divinePride,
-      row.item.links.market ?? "",
-    ]);
+    const headers = ["id", "item", "origem", "qtd", "refino", "cartas", "vendivel", "divine_pride", "mercado"];
+    const body = visible.map((row) => {
+      const links = linksFor(row.item.itemId, row.item.name, server);
+      return [
+        row.item.itemId,
+        itemLabel(row.item.name, row.refine, row.item.slots),
+        ORIGIN_LABEL[row.origin],
+        row.qty,
+        row.refine,
+        row.cardNames.join(" / "),
+        isUnsellable(row) ? "não" : "sim",
+        links.divinePride,
+        links.market ?? "",
+      ];
+    });
 
-    download(
-      `${state.valuation.character.name}-${stamp(state.valuation.recordedAt)}.csv`,
-      toCsv(headers, body),
-    );
+    download(`${state.inventory.character.name}-${stamp(state.inventory.recordedAt)}.csv`, toCsv(headers, body));
   };
 
   const reset = (): void => {
     clear();
     setFilters(DEFAULT_FILTERS);
-    // As tendências não precisam ser limpas à mão: sem replay carregado a tabela some, e
-    // `useMovers` só busca de novo quando o próximo entra.
   };
 
   return (
     <section className="page">
       <SummaryHeader
-        valuation={state.valuation}
-        filteredValue={sumValue(visible)}
+        inventory={state.inventory}
         filteredCount={visible.length}
-        filteredUnpriced={countUnpriced(visible)}
+        filteredUnits={visibleUnits}
       />
 
       <FilterBar
@@ -181,7 +122,6 @@ export function ReplayPage({
         onChange={setFilters}
         availableOrigins={availableOrigins}
         unsellableCount={unsellableCount}
-        unpricedCount={unpricedCount}
         untradableFailed={catalogue.untradableFailed}
         onExport={exportCsv}
         onClear={reset}
@@ -189,15 +129,9 @@ export function ReplayPage({
 
       <ItemsTable
         rows={visible}
+        server={server}
         descriptions={catalogue.descriptions}
         isUnsellable={isUnsellable}
-        movers={trends}
-        onSelect={onSelectItem}
-      />
-
-      <SellCandidates
-        candidates={state.valuation.sellCandidates}
-        descriptions={catalogue.descriptions}
         onSelect={onSelectItem}
       />
     </section>

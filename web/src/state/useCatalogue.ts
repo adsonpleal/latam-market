@@ -4,8 +4,8 @@
  * Os dois arquivos carregam em momentos diferentes de propósito:
  *  - `untradable` (~7 KB) na montagem, porque o filtro vem LIGADO e precisa estar certo
  *    já na primeira pintura;
- *  - `descriptions` (~490 KB comprimido) só quando alguém vai precisar dele, disparado
- *    junto com o upload do replay — a ida e volta do upload cobre o download.
+ *  - `descriptions` (~490 KB comprimido) só quando uma tela que mostra hover de item abre
+ *    (inventário carregado, busca, favoritos, painel de item) — não na primeira pintura.
  *
  * Falhar em qualquer um dos dois degrada, não quebra: sem descrição o hover fica mudo,
  * e sem a lista de intransferíveis o filtro é DESLIGADO com um aviso, em vez de trocar
@@ -15,6 +15,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { DESCRIPTIONS_URL, UNTRADABLE_URL } from "../generated/catalogue.js";
+import { fetchJson } from "../lib/catalogue/catalogue.js";
 
 export interface Catalogue {
   /** Ids que a descrição do cliente marca como intransferíveis. */
@@ -26,9 +27,6 @@ export interface Catalogue {
   loadDescriptions: () => void;
 }
 
-const json = <T,>(url: string): Promise<T> =>
-  fetch(url).then((res) => (res.ok ? (res.json() as Promise<T>) : Promise.reject(res.status)));
-
 export function useCatalogue(): Catalogue {
   const [untradable, setUntradable] = useState<Set<number>>(() => new Set());
   const [untradableFailed, setUntradableFailed] = useState(false);
@@ -38,7 +36,7 @@ export function useCatalogue(): Catalogue {
 
   useEffect(() => {
     let alive = true;
-    json<number[]>(UNTRADABLE_URL)
+    fetchJson<number[]>(UNTRADABLE_URL)
       .then((ids) => alive && setUntradable(new Set(ids)))
       .catch(() => alive && setUntradableFailed(true));
     return () => {
@@ -51,11 +49,11 @@ export function useCatalogue(): Catalogue {
     started.current = true;
     // Silencioso no erro: o hover é acessório, e um alerta aqui atrapalharia mais do
     // que ajudaria. `descriptions` fica vazio e o cartão diz que não tem descrição.
-    void json<Record<string, string>>(DESCRIPTIONS_URL).then(setDescriptions).catch(() => {});
+    void fetchJson<Record<string, string>>(DESCRIPTIONS_URL).then(setDescriptions).catch(() => {});
   }, []);
 
   // Sem o memo, o objeto novo a cada render de `App` re-dispara os efeitos das páginas
-  // que o listam nas dependências — o que fazia `/deals` e `/movers` serem buscados de
+  // que o listam nas dependências — o que fazia a busca ser refeita de
   // novo a cada abrir e fechar do painel de item.
   return useMemo(
     () => ({ untradable, descriptions, untradableFailed, loadDescriptions }),

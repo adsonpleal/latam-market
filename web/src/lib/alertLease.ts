@@ -1,17 +1,18 @@
 /**
  * Qual aba toca o laço, quando há mais de uma aberta.
  *
- * Sem isto, três abas do app significam três vezes mais requisições no nosso servidor e
- * até três pushes idênticos no celular. O `lastAlertedPrice` **não** resolve sozinho: duas
+ * Sem isto, três abas do app significam três vezes mais consultas ao site oficial — todas
+ * saindo do MESMO IP, gastando a mesma cota (ver `lib/market/budget.ts`) — e até três pushes
+ * idênticos no celular. O `lastAlertedPrice` **não** resolve sozinho: duas
  * abas podem ler `null` no mesmo ciclo, as duas concluírem "posso avisar" e as duas
  * avisarem antes de qualquer uma gravar.
  *
  * **A validade do lease é curta e fixa, e NÃO derivada do intervalo de checagem.** Foi a
- * primeira tentativa e estava errada: um ciclo pode ficar 10 minutos dormindo entre uma
- * coleta e a seguinte, então uma validade proporcional a ele significaria que uma aba
- * fechada travaria os alertas de todas as outras por quase 20 minutos. A aba dona reafirma o
- * lease num batimento curto, que não custa requisição nenhuma — assim "a dona está viva
- * mas dormindo" deixa de ser indistinguível de "a dona foi embora".
+ * primeira tentativa e estava errada: um ciclo pode ficar uma hora dormindo entre uma volta e
+ * a seguinte, então uma validade proporcional a ele significaria que uma aba fechada travaria
+ * os alertas de todas as outras por duas horas. A aba dona reafirma o lease a cada tique do
+ * laço (15 s, sem tocar a rede) — assim "a dona está viva mas dormindo" deixa de ser
+ * indistinguível de "a dona foi embora".
  *
  * `Storage` e `now` entram por parâmetro para isto ser testável sem navegador — e é lógica
  * que merece teste, porque o modo de falhar é "às vezes chega push dobrado", que ninguém
@@ -23,14 +24,11 @@ import { ALERTS_LEASE_KEY, type AlertsLease } from "./persist.js";
 /**
  * Depois disto sem reafirmação, o lease é de quem quiser.
  *
- * Folgado o suficiente para sobreviver ao estrangulamento de timer em aba de fundo (que é
- * de cerca de um tique por minuto, menor que o batimento de 30s vezes três), e curto o
- * suficiente para outra aba assumir em pouco mais de um minuto.
+ * Folgado o suficiente para sobreviver ao estrangulamento de timer em aba de fundo (cerca de
+ * um tique por minuto, contra os 15 s do laço), e curto o suficiente para outra aba assumir
+ * em pouco mais de um minuto.
  */
 export const LEASE_TTL_MS = 90_000;
-
-/** De quanto em quanto tempo a dona reafirma. Só escreve no storage; não vai à rede. */
-export const LEASE_HEARTBEAT_MS = 30_000;
 
 type ReadWrite = Pick<Storage, "getItem" | "setItem">;
 
@@ -41,19 +39,14 @@ type ReadWrite = Pick<Storage, "getItem" | "setItem">;
  * escrever no `localStorage` é síncrono, mas o par não é atômico, então quanto menor a
  * distância entre a decisão e a escrita, menor a janela em que duas abas se acham donas.
  */
-export function claimLease(
-  store: ReadWrite,
-  tabId: string,
-  now: number,
-  ttlMs: number = LEASE_TTL_MS,
-): boolean {
+export function claimLease(store: ReadWrite, tabId: string, now: number): boolean {
   const current = readLease(store);
 
   if (current !== null && current.tabId !== tabId) {
     const elapsed = now - current.at;
     // `elapsed < 0` é relógio que andou para trás (suspensão da máquina, NTP). Tratar como
     // abandonado: o contrário deixaria uma aba morta trancando os alertas para sempre.
-    const abandonado = elapsed < 0 || elapsed > ttlMs;
+    const abandonado = elapsed < 0 || elapsed > LEASE_TTL_MS;
     if (!abandonado) return false;
   }
 

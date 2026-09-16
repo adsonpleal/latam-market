@@ -5,8 +5,8 @@ const NUM = new Intl.NumberFormat("pt-BR");
 /**
  * Zeny. `null` vira travessão, nunca zero.
  *
- * A regra do backend é "nada de inventar valor": um item sem oferta sai com preço
- * `null`. Mostrar 0 leria como "não vale nada" em vez de "não sabemos".
+ * Um item sem loja vendendo não tem preço, e mostrar 0 leria como "não vale nada" em vez
+ * de "não sabemos".
  */
 export const zeny = (n: number | null | undefined): string =>
   n === null || n === undefined ? "—" : `${NUM.format(Math.round(n))}z`;
@@ -24,12 +24,26 @@ export const count = (n: number | null | undefined): string =>
 export const plural = (n: number, um: string, muitos: string): string =>
   `${NUM.format(n)} ${n === 1 ? um : muitos}`;
 
-/** Epoch em SEGUNDOS (o backend inteiro usa segundos, não milissegundos). */
+/**
+ * Junta uma lista em prosa: vírgula entre os itens e "e" antes do último.
+ *
+ * Um `join(" e ")` só passa por português enquanto a lista tem dois itens.
+ */
+export function enumerate(items: string[]): string {
+  if (items.length <= 1) return items[0] ?? "";
+  return `${items.slice(0, -1).join(", ")} e ${items[items.length - 1]}`;
+}
+
+/** Epoch em SEGUNDOS — é o que o replay grava em `recordedAt`. */
 export const dateTime = (epochSec: number): string =>
   new Date(epochSec * 1000).toLocaleString("pt-BR", { dateStyle: "short", timeStyle: "short" });
 
-export const date = (epochSec: number): string =>
-  new Date(epochSec * 1000).toLocaleDateString("pt-BR");
+/** Só a hora: "14:32". O relógio das pausas e do selo da conexão. */
+export const time = (epochMs: number): string =>
+  new Date(epochMs).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" });
+
+/** O mesmo que `ago`, para quem já tem milissegundos (o relógio do navegador). */
+export const agoMs = (epochMs: number | null): string => ago(epochMs === null ? null : epochMs / 1000);
 
 /** "há 12 min", "há 3 h", "há 2 dias". */
 export function ago(epochSec: number | null): string {
@@ -43,21 +57,14 @@ export function ago(epochSec: number | null): string {
   return `há ${d} ${d === 1 ? "dia" : "dias"}`;
 }
 
-/**
- * O contrário de `ago`: "em 12 min", "em 2 h".
- *
- * Um instante que já passou vira "a qualquer momento" em vez de um número negativo — é o
- * caso da coleta que atrasou, e "em -3 min" não diz nada a ninguém.
- */
-export function upcoming(epochSec: number | null): string {
-  if (epochSec === null) return "sem previsão";
-  const min = (epochSec - Date.now() / 1000) / 60;
-  if (min <= 1) return "a qualquer momento";
-  if (min < 60) return `em ${Math.round(min)} min`;
-  const h = min / 60;
-  if (h < 24) return `em ${Math.round(h)} h`;
-  const d = Math.round(h / 24);
-  return `em ${d} ${d === 1 ? "dia" : "dias"}`;
+/** Uma duração em milissegundos: "45 s", "3 min", "1 h 5 min". */
+export function duration(ms: number): string {
+  const s = Math.round(ms / 1000);
+  if (s < 60) return `${s} s`;
+  const min = Math.round(s / 60);
+  if (min < 60) return `${min} min`;
+  const h = Math.floor(min / 60);
+  return min % 60 === 0 ? `${h} h` : `${h} h ${min % 60} min`;
 }
 
 /** `yyyymmdd`, para nome de arquivo. */

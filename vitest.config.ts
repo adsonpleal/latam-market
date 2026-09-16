@@ -1,16 +1,12 @@
 import { defineConfig } from "vitest/config";
 
+/**
+ * Os testes da raiz são só os de `tools/` — scripts em JS puro, rodados por `node` direto
+ * (o do catálogo e a guarda contra vazamento do coletor). A aplicação tem a suíte dela em
+ * `web/`.
+ */
 export default defineConfig({
   test: {
-    include: [
-      "src/**/*.test.ts",
-      // `tools/` entra porque os scripts de lá são JS puro, rodados por `node` direto: o teste
-      // do catálogo importa `tools/sync-items.mjs`, e escrevê-lo em TS dentro de `src/`
-      // obrigaria o tsc a enxergar `.mjs` (`allowJs`) só por causa dele.
-      "tools/**/*.{test,spec}.mjs",
-    ],
-    // O cache do mercado é singleton de módulo. Enquanto houver arquivos que escrevem nele,
-    // rodar em paralelo embaralharia leituras de outro.
-    fileParallelism: false,
+    include: ["tools/**/*.{test,spec}.mjs"],
   },
 });
