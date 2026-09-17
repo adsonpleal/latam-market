@@ -2,8 +2,8 @@
  * Painel de detalhe de um item: nome, links e a descrição do cliente.
  *
  * Já teve histórico, ofertas abertas e um avaliador de preço — tudo alimentado pela coleta
- * do servidor, que acabou em 2026-09-15. O que sobrou é o que vem do catálogo, e o caminho
- * para ver o mercado de agora é o link de lojas, no site oficial.
+ * do servidor, que acabou em 2026-09-15. O que sobrou é o que vem do catálogo; o mercado
+ * mora nos links para o site oficial, que é quem tem preço de agora e série passada.
  */
 
 import type { Server } from "../lib/server.js";
@@ -58,7 +58,8 @@ export function ItemDrawer({ itemId, server, description, onClose }: Props) {
         {missing && <p className="error">Este id não existe no catálogo.</p>}
 
         <p className="note">
-          Para ver quem está vendendo agora, abra <strong>Lojas</strong> no site oficial — ou
+          Para ver quem está vendendo agora, abra <strong>Lojas</strong> no site oficial, e{" "}
+          <strong>Histórico</strong> para o preço que o site registrou ao longo do tempo — ou
           favorite o item e consulte o preço pela aba Favoritos.
         </p>
 

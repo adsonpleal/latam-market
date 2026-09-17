@@ -24,6 +24,14 @@ export const MARKET_ORIGIN = "https://ro.gnjoyamericas.com";
 /** A busca de lojas. É o único caminho que a conexão aceita buscar — ver `bridge/bridge.ts`. */
 export const TRADING_PATH = "/pt/intro/shop-search/trading";
 
+/**
+ * O histórico de preço do site oficial: um agregado por item, não uma lista de anúncios.
+ *
+ * Só existe como link para a pessoa abrir. A conexão não busca este caminho — ela lê preço
+ * da busca de lojas, e o `bridge` recusa qualquer outra página de propósito.
+ */
+const MARKET_PRICE_PATH = "/pt/intro/shop-search/market-price";
+
 const DIVINE_PRIDE = "https://www.divine-pride.net/database/item";
 
 /**
@@ -106,6 +114,17 @@ function tradingUrl(server: Server, searchWord: string, limit?: number): string 
 }
 
 /**
+ * O histórico de preço de um termo, no site oficial.
+ *
+ * `period=ALL` pede a série inteira. Não há `sortType` nem página: o histórico é um
+ * agregado por item, então não há anúncio para ordenar por preço.
+ */
+function historyUrl(server: Server, searchWord: string): string {
+  const params = new URLSearchParams({ serverType: server, searchWord, period: "ALL" });
+  return `${MARKET_ORIGIN}${MARKET_PRICE_PATH}?${params.toString()}`;
+}
+
+/**
  * A URL que a conexão busca para um termo já escolhido (ver `plan.ts`).
  *
  * O termo vem do planejador, que só monta termos com caracteres aceitos; a checagem de tamanho
@@ -129,6 +148,8 @@ export interface ItemLinks {
   divinePride: string;
   /** Lojas vendendo este item agora, no site oficial. Null se o nome não é buscável. */
   market: string | null;
+  /** Histórico de preço do item, no site oficial. Null se o nome não é buscável. */
+  marketHistory: string | null;
 }
 
 /**
@@ -143,5 +164,6 @@ export function linksFor(itemId: number, name: string, server: Server): ItemLink
   return {
     divinePride: `${DIVINE_PRIDE}/${itemId}`,
     market: word === null ? null : tradingUrl(server, word),
+    marketHistory: word === null ? null : historyUrl(server, word),
   };
 }

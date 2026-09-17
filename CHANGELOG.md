@@ -11,6 +11,10 @@ Mais recente primeiro. A seção do topo é a fonte do post de novidades no Disc
   **Variações** e **Estado**, as colunas de preço da **Buscar** e do **Meu inventário**, e o
   **servidor MCP**. O histórico coletado até aqui não vai voltar à tela — congelado, ele
   mostraria preço velho com cara de atual.
+- **Cada item tem um link de Histórico para o site oficial.** Ao lado de **DP** e **Lojas**,
+  ele abre a consulta de preço do site: mínimo, máximo, média e volume registrados para aquele
+  nome, no seu servidor. É o histórico que o **site oficial** mantém e continua publicando —
+  o que não volta é o nosso, o da coleta.
 - **Os alertas de preço continuam, agora consultando o site pelo seu próprio navegador.** Na
   aba **Favoritos** você abre uma aba auxiliar no site oficial e clica num favorito
   ("bookmarklet") que arrasta para a barra do navegador. É essa aba que busca os preços da
