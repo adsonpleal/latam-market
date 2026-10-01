@@ -3,6 +3,15 @@
 Mais recente primeiro. A seção do topo é a fonte do post de novidades no Discord
 (`tools/post-novidades.mjs`), então escreva pensando em quem vai ler lá.
 
+## 0.14.1 — 2026-09-30
+
+- **A busca agora conhece mais 124 itens da atualização do cliente.** Entraram, entre outros,
+  as Asas de Borboleta coloridas e caixas de asas. O catálogo tem 14.232 itens, sem perder
+  nenhum da versão anterior.
+- **Nomes e descrições acompanharam as tabelas novas do jogo.** Foram atualizados 225 nomes
+  e 1.123 descrições. Por exemplo, o antigo "Machado Celestial" agora aparece como "Machado
+  dos Céus".
+
 ## 0.14.0 — 2026-09-15
 
 - **O site oficial pôs a proteção da Cloudflare na frente do mercado, e a coleta acabou.**
