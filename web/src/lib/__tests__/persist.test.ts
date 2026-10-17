@@ -47,6 +47,18 @@ describe("parseAlerts", () => {
     expect(parseAlerts(JSON.stringify({ "FREYA:501": bom }))).toEqual({ "FREYA:501": bom });
   });
 
+  it("preserva o marcador de falta entre recargas e ignora valores não booleanos", () => {
+    for (const lastAlertedEmpty of [true, false]) {
+      const alert = { ...bom, lastAlertedEmpty };
+      expect(parseAlerts(JSON.stringify({ "FREYA:501": alert }))).toEqual({ "FREYA:501": alert });
+    }
+    for (const lastAlertedEmpty of ["true", 1, null]) {
+      expect(parseAlerts(JSON.stringify({ "FREYA:501": { ...bom, lastAlertedEmpty } }))).toEqual({
+        "FREYA:501": bom,
+      });
+    }
+  });
+
   it("descarta chave malformada e PRESERVA as boas", () => {
     const raw = JSON.stringify({
       "FREYA:501": bom,

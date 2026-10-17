@@ -2,9 +2,8 @@
  * O ciclo de vida de um alerta.
  *
  * É a lógica mais fácil de quebrar sem ninguém notar: o modo de falhar é "não avisou", e
- * quem não recebeu um aviso não tem como saber que devia ter recebido. Os testes de
- * queda e de alta são espelhos de propósito — a assimetria entre eles seria justamente o
- * bug que passaria despercebido.
+ * quem não recebeu um aviso não tem como saber que devia ter recebido. Queda e alta
+ * compartilham a regra de preço; só a alta também dispara quando não há lojas vendendo.
  */
 
 import { describe, expect, it } from "vitest";
@@ -13,6 +12,7 @@ import {
   COALESCE_ABOVE,
   applyAlertPatch,
   coalesce,
+  describeAlert,
   evaluateAlert,
   gapToTarget,
   planAlerts,
@@ -20,7 +20,7 @@ import {
   type CheckedItem,
 } from "../alerts.js";
 import type { MarketCheck } from "../market/checks.js";
-import { serverItemKey, parseServerItemKey, type Alert } from "../persist.js";
+import { serverItemKey, parseAlerts, parseServerItemKey, type Alert, type Alerts } from "../persist.js";
 
 const armed = (over: Partial<Alert> = {}): Alert => ({
   enabled: true,
@@ -152,6 +152,42 @@ describe("evaluateAlert — alta (quero vender)", () => {
   });
 });
 
+describe("evaluateAlert — alta sem ofertas", () => {
+  const up = (over: Partial<Alert> = {}) => armed({ direction: "up", ...over });
+
+  it("avisa sem ofertas, mesmo que já tenha avisado do preço alto", () => {
+    for (const lastAlertedPrice of [null, 1200]) {
+      expect(evaluateAlert(up({ lastAlertedPrice }), null)).toEqual({
+        fire: true,
+        patch: { lastAlertedEmpty: true },
+      });
+    }
+  });
+
+  it("não repete enquanto faltar e rearma quando qualquer loja volta", () => {
+    const passo = stepper(up());
+    expect(passo(null)).toBe(true);
+    expect(passo(null)).toBe(false);
+    expect(passo(900)).toBe(false);
+    expect(passo(null)).toBe(true);
+  });
+
+  it("a volta das lojas preserva a deduplicação do preço e rearma o aviso de falta", () => {
+    const passo = stepper(up());
+    expect(passo(1200)).toBe(true);
+    expect(passo(null)).toBe(true);
+    expect(passo(1200)).toBe(false);
+    expect(passo(null)).toBe(true);
+    expect(passo(1300)).toBe(true);
+    expect(passo(800)).toBe(false);
+    expect(passo(1200)).toBe(true);
+  });
+
+  it("a descrição explica o aviso de falta", () => {
+    expect(describeAlert(up()).long).toContain("ou não houver lojas vendendo");
+  });
+});
+
 describe("evaluateAlert — à venda (quero a qualquer preço)", () => {
   const available = (over: Partial<Alert> = {}) =>
     armed({ direction: "available", targetPrice: 0, ...over });
@@ -207,10 +243,9 @@ describe("evaluateAlert — à venda (quero a qualquer preço)", () => {
 });
 
 describe("evaluateAlert — sem preço", () => {
-  it("ninguém vendendo não é sinal: nem avisa nem grava", () => {
-    for (const direction of ["down", "up"] as const) {
-      expect(evaluateAlert(armed({ direction }), null)).toEqual({ fire: false, patch: null });
-      expect(evaluateAlert(armed({ direction, lastAlertedPrice: 900 }), null)).toEqual({
+  it("na queda, ninguém vendendo não é sinal: nem avisa nem grava", () => {
+    for (const lastAlertedPrice of [null, 900]) {
+      expect(evaluateAlert(armed({ lastAlertedPrice }), null)).toEqual({
         fire: false,
         patch: null,
       });
@@ -233,6 +268,14 @@ describe("applyAlertPatch", () => {
   it("regravar o MESMO alvo não rearma", () => {
     const next = applyAlertPatch(armed({ lastAlertedPrice: 900 }), { targetPrice: 1000 });
     expect(next.lastAlertedPrice).toBe(900);
+  });
+
+  it("mudar o alvo ou a direção também rearma o aviso de falta", () => {
+    const current = armed({ direction: "up", lastAlertedEmpty: true });
+    expect(applyAlertPatch(current, { targetPrice: 2000 }).lastAlertedEmpty).toBe(false);
+    expect(applyAlertPatch(current, { direction: "down" }).lastAlertedEmpty).toBe(false);
+    expect(applyAlertPatch(current, { enabled: false }).lastAlertedEmpty).toBe(true);
+    expect(applyAlertPatch(current, { targetPrice: 2000, lastAlertedEmpty: true }).lastAlertedEmpty).toBe(true);
   });
 
   it("um patch só de 'enabled' preserva o marcador", () => {
@@ -318,7 +361,46 @@ describe("planAlerts", () => {
     ]);
   });
 
-  it("item sem oferta nenhuma não gera patch nem aviso", () => {
+  it("na alta, avisa que está sem ofertas, com servidor e link, sem inventar preço", () => {
+    const alerts = { "NIDHOGG:501": armed({ direction: "up" }) };
+    const plan = planAlerts("NIDHOGG", alerts, favorites, [priceOf(501, null, "Poção")]);
+    expect(plan.patches).toEqual([{ key: "NIDHOGG:501", patch: { lastAlertedEmpty: true } }]);
+    expect(plan.notifications).toHaveLength(1);
+    expect(plan.notifications[0]).toMatchObject({
+      title: "Sem ofertas: Poção",
+      body: "Nenhuma loja vendendo este item (NIDHOGG)",
+    });
+    expect(plan.notifications[0]?.click).toContain("searchWord=Po%C3%A7%C3%A3o");
+  });
+
+  it.each(["incomplete", "error", "unsearchable"] as const)(
+    "na alta, consulta %s não dispara nem rearma o aviso de falta",
+    (status) => {
+      for (const lastAlertedEmpty of [false, true]) {
+        const alerts = { "FREYA:501": armed({ direction: "up", lastAlertedEmpty }) };
+        const checked = [{ itemId: 501, name: "Poção", check: checkOf(null, status) }];
+        expect(planAlerts("FREYA", alerts, favorites, checked)).toEqual({ patches: [], notifications: [] });
+      }
+    },
+  );
+
+  it("o aviso de falta não repete após recarregar e rearma quando as lojas voltam", () => {
+    let alerts: Alerts = { "FREYA:501": armed({ direction: "up", lastAlertedPrice: 1200 }) };
+    const cycle = (min: number | null) => {
+      const plan = planAlerts("FREYA", alerts, favorites, [priceOf(501, min)]);
+      for (const { key, patch } of plan.patches) {
+        alerts = { ...alerts, [key]: applyAlertPatch(alerts[key], patch) };
+      }
+      alerts = parseAlerts(JSON.stringify(alerts))!;
+      return plan.notifications;
+    };
+    expect(cycle(null)).toHaveLength(1);
+    expect(cycle(null)).toEqual([]);
+    expect(cycle(1200)).toEqual([]);
+    expect(cycle(null)).toHaveLength(1);
+  });
+
+  it("na queda, item sem oferta nenhuma não gera patch nem aviso", () => {
     const alerts = { "FREYA:501": armed() };
     expect(planAlerts("FREYA", alerts, favorites, [priceOf(501, null)])).toEqual({
       patches: [],
@@ -428,5 +510,6 @@ describe("applyAlertPatch — identidade", () => {
     const atual = armed({ lastAlertedPrice: 900 });
     expect(applyAlertPatch(atual, { enabled: false })).not.toBe(atual);
     expect(applyAlertPatch(atual, { targetPrice: 5 })).not.toBe(atual);
+    expect(applyAlertPatch(atual, { lastAlertedEmpty: true })).not.toBe(atual);
   });
 });

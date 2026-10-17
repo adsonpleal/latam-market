@@ -94,7 +94,7 @@ export function AlertModal({
             checked={direction === "up"}
             onChange={() => setDirection("up")}
           />
-          Quando o menor preço <strong>subir</strong> para este valor ou mais
+          Quando o menor preço <strong>subir</strong> para este valor ou mais, ou não houver lojas vendendo
         </label>
         <label className="toggle">
           <input
@@ -137,6 +137,9 @@ export function AlertModal({
           : "Para não encher o celular, o aviso não se repete no mesmo preço: só sai de novo se " +
             "o preço andar mais na direção escolhida. Ele rearma sozinho quando o preço volta " +
             "para o outro lado do alvo — e mudar o alvo rearma na hora."}
+        {direction === "up" &&
+          " Também avisa uma vez quando não há lojas vendendo, inclusive no próximo ciclo se " +
+          "já estiver sem ofertas. Esse aviso rearma quando alguma loja volta a vender."}
       </p>
 
       <div className="modal-actions">
