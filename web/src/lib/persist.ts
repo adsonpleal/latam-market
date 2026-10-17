@@ -56,7 +56,7 @@ export function tabId(): string {
 }
 
 /**
- * `down` = quero comprar, avisa quando cair. `up` = quero vender, avisa quando subir.
+ * `down` = quero comprar, avisa quando cair. `up` = quero vender, avisa quando subir ou faltar.
  * `available` = quero o item a qualquer preço, avisa quando alguém puser à venda.
  */
 export type Direction = "down" | "up" | "available";
@@ -79,6 +79,8 @@ export interface Alert {
    * congelar a aba e recarregá-la a qualquer momento.
    */
   lastAlertedPrice: number | null;
+  /** Em `up`, já avisou que não há lojas. Rearma quando alguma loja volta a vender. */
+  lastAlertedEmpty?: boolean;
 }
 
 /**
@@ -161,7 +163,7 @@ export function parseAlerts(raw: string | null): Alerts | null {
     // pertence poderia avaliá-lo contra o mercado errado.
     if (parseServerItemKey(key) === null || !isRecord(value)) continue;
 
-    const { enabled, direction, targetPrice, lastAlertedPrice } = value;
+    const { enabled, direction, targetPrice, lastAlertedPrice, lastAlertedEmpty } = value;
     const validTarget =
       typeof targetPrice === "number" && Number.isFinite(targetPrice) && targetPrice > 0;
     // Só o aviso de "à venda" dispensa alvo; nos de preço, sem alvo não há o que comparar.
@@ -174,6 +176,7 @@ export function parseAlerts(raw: string | null): Alerts | null {
         typeof lastAlertedPrice === "number" && Number.isFinite(lastAlertedPrice)
           ? lastAlertedPrice
           : null,
+      ...(typeof lastAlertedEmpty === "boolean" ? { lastAlertedEmpty } : {}),
     };
   }
   return out;

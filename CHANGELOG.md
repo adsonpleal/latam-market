@@ -3,6 +3,12 @@
 Mais recente primeiro. A seção do topo é a fonte do post de novidades no Discord
 (`tools/post-novidades.mjs`), então escreva pensando em quem vai ler lá.
 
+## Não lançado
+
+- **O alerta de alta também avisa quando ninguém está vendendo o item.** O aviso sai uma
+  vez enquanto não houver ofertas e pode sair de novo depois que alguma loja voltar a vender.
+  Sugestão de IvanAbreu.
+
 ## 0.14.1 — 2026-09-30
 
 - **A busca agora conhece mais 124 itens da atualização do cliente.** Entraram, entre outros,

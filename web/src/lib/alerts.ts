@@ -38,6 +38,9 @@ export function applyAlertPatch(current: Alert | undefined, patch: Partial<Alert
   if ((mudouAlvo || mudouDirecao) && patch.lastAlertedPrice === undefined) {
     next.lastAlertedPrice = null;
   }
+  if ((mudouAlvo || mudouDirecao) && patch.lastAlertedEmpty === undefined && base.lastAlertedEmpty) {
+    next.lastAlertedEmpty = false;
+  }
 
   /**
    * Patch que não muda nada devolve a MESMA referência.
@@ -51,7 +54,8 @@ export function applyAlertPatch(current: Alert | undefined, patch: Partial<Alert
     next.enabled === current.enabled &&
     next.direction === current.direction &&
     next.targetPrice === current.targetPrice &&
-    next.lastAlertedPrice === current.lastAlertedPrice
+    next.lastAlertedPrice === current.lastAlertedPrice &&
+    next.lastAlertedEmpty === current.lastAlertedEmpty
   ) {
     return current;
   }
@@ -67,8 +71,8 @@ export interface AlertDecision {
 /**
  * O alerta dispara agora?
  *
- * As duas direções são espelhos exatos, incluindo o "só reavisa se andou mais na mesma
- * direção" e o rearme ao voltar para o outro lado do alvo.
+ * Com preço, só reavisa se andou mais na mesma direção e rearma ao voltar para o outro
+ * lado do alvo. Na alta, também avisa uma vez quando não há lojas vendendo.
  *
  * `price` é sempre o **menor preço nas lojas abertas**, da última consulta ao site. Uma série
  * só para as duas direções: comprando, é quanto custa hoje; vendendo, é o preço que se
@@ -77,9 +81,22 @@ export interface AlertDecision {
 export function evaluateAlert(alert: Alert, price: number | null): AlertDecision {
   if (alert.direction === "available") return evaluateAvailable(alert, price);
 
-  // Ninguém vendendo. Não há sinal, e inventar um é pior que calar.
-  if (price === null) return { fire: false, patch: null };
+  if (price === null) {
+    if (alert.direction === "up" && !alert.lastAlertedEmpty) {
+      return { fire: true, patch: { lastAlertedEmpty: true } };
+    }
+    return { fire: false, patch: null };
+  }
 
+  const decision = evaluatePriceAlert(alert, price);
+  // A volta de qualquer loja rearma o aviso de falta, sem perder a deduplicação do preço.
+  if (alert.lastAlertedEmpty) {
+    return { ...decision, patch: { ...decision.patch, lastAlertedEmpty: false } };
+  }
+  return decision;
+}
+
+function evaluatePriceAlert(alert: Alert, price: number): AlertDecision {
   const atingiu = alert.direction === "down" ? price <= alert.targetPrice : price >= alert.targetPrice;
 
   if (atingiu) {
@@ -101,8 +118,8 @@ export function evaluateAlert(alert: Alert, price: number | null): AlertDecision
  *
  * Avisa uma vez por aparição: enquanto houver loja vendendo, preço nenhum reavisa — quem
  * quer saber de queda usa a direção `down`. É o sumiço de TODAS as lojas que rearma, e aqui
- * `null` é sinal, ao contrário das direções de preço: é justamente o "voltou para o outro
- * lado". O `lastAlertedPrice` guarda o preço em que avisou só para servir de marcador.
+ * `null` é justamente o "voltou para o outro lado". O `lastAlertedPrice` guarda o preço
+ * em que avisou só para servir de marcador.
  */
 function evaluateAvailable(alert: Alert, price: number | null): AlertDecision {
   const armado = alert.lastAlertedPrice === null;
@@ -138,7 +155,7 @@ const WORDING: Record<
   up: {
     title: "Preço subiu",
     short: (t) => `↑ ${t}`,
-    long: (t) => `Avisar quando o menor preço subir para ${t}`,
+    long: (t) => `Avisar quando o menor preço subir para ${t} ou não houver lojas vendendo`,
   },
   available: {
     title: "À venda",
@@ -190,9 +207,8 @@ export interface CheckedItem {
  * Só avalia alertas do servidor ativo e de itens que ainda estão nos favoritos:
  * desfavoritar silencia o alerta sem apagá-lo, então reativá-lo é só favoritar de novo.
  *
- * Consulta inconclusiva (página cortada, erro) não decide nada. As direções de preço já
- * calariam sem preço, mas o aviso de "à venda" leria a falta de preço como "sumiu de todas
- * as lojas", rearmaria e avisaria de novo o que já estava à venda.
+ * Consulta inconclusiva (página cortada, erro) não decide nada: não confirma que o item
+ * sumiu das lojas, então não pode disparar o aviso de falta nem rearmar o de "à venda".
  */
 export function planAlerts(
   server: Server,
@@ -212,14 +228,17 @@ export function planAlerts(
     const { min } = check;
     const { fire, patch } = evaluateAlert(alert, min);
     if (patch) plan.patches.push({ key, patch });
-    if (fire && min !== null) {
+    if (fire) {
       plan.notifications.push({
         itemId,
         name,
-        title: `${WORDING[alert.direction].title}: ${name}`,
-        body: usesTarget(alert.direction)
-          ? `Mín ${zeny(min)} — alvo ${zeny(alert.targetPrice)} (${server})`
-          : `Mín ${zeny(min)} (${server})`,
+        title: `${min === null ? "Sem ofertas" : WORDING[alert.direction].title}: ${name}`,
+        body:
+          min === null
+            ? `Nenhuma loja vendendo este item (${server})`
+            : usesTarget(alert.direction)
+              ? `Mín ${zeny(min)} — alvo ${zeny(alert.targetPrice)} (${server})`
+              : `Mín ${zeny(min)} (${server})`,
         click: linksFor(itemId, name, server).market,
       });
     }
