@@ -1,86 +1,98 @@
 ---
 name: sync-with-ragassets
-description: Atualiza data/latam-items.json a partir das tabelas do cliente publicadas pelo ragassets. Use depois de uma atualização do cliente do RO LATAM, quando um item novo não é encontrado pela busca, ou quando o catálogo parece velho (nome em espanhol, descrição desatualizada).
+description: Refresh data/latam-items.json from the client tables published by ragassets. Use after a RO LATAM client update, when a new item is not found by the search, or when the catalogue looks old (a name in Spanish, a stale description).
 ---
 
-# Sincronizar o catálogo com o ragassets
+# Sync the catalogue with ragassets
 
-## Por que isto existe
+## Why this exists
 
-O serviço busca item por nome, e esse nome vem de `data/latam-items.json` — 14 mil e tantos
-itens em pt-BR, versionados no repositório e embarcados no tar do deploy. O arquivo é
-vendorizado de propósito: o servidor sobe como um bundle único no EC2 e carrega o catálogo
-**antes** de escutar, então buscá-lo na rede no boot amarraria "o mercado está no ar" a "um
-segundo host está de pé".
+The service searches for an item by name, and that name comes from
+`data/latam-items.json` — fourteen-thousand-odd items in pt-BR, committed to the repository
+and shipped inside the deploy tar. The file is vendored on purpose: the server comes up as a
+single bundle on EC2 and loads the catalogue **before** it listens, so fetching it over the
+network at boot would tie "the market is up" to "a second host is up".
 
-Vendorizar, porém, custa: a cópia envelhece sozinha. A origem é o
-[ragassets](https://github.com/adsonpleal/ragassets), que extrai as tabelas do cliente do
-jogo e as publica em `https://assets.latam-tools.com.br/raw/`. Uma origem só, sempre atual,
-sem checkout vizinho na máquina — antes o catálogo era copiado do checkout do latam-ro-calc
-ao lado, o que exigia o irmão presente **e** já atualizado, e deixava o catálogo daqui tão
-velho quanto o `git pull` mais antigo dos dois.
+Vendoring has a cost, though: the copy goes stale on its own. The source is
+[ragassets](https://github.com/adsonpleal/ragassets), which extracts the game client's
+tables and publishes them at `https://assets.latam-tools.com.br/raw/`. One single source,
+always current, with no sibling checkout on the machine — the catalogue used to be copied
+from the latam-ro-calc checkout next door, which required the sibling to be present **and**
+already up to date, and left the catalogue here as old as the older `git pull` of the two.
 
-## Quando rodar
+## When to run it
 
-- Depois de uma atualização do cliente do RO LATAM (itens novos, nomes traduzidos).
-- Quando alguém reclamar que a busca não acha um item que existe no jogo.
-- Quando um nome sair em espanhol: é sinal de que a tradução chegou ao cliente e não aqui.
+- After a RO LATAM client update (new items, translated names).
+- When someone complains that the search cannot find an item that exists in the game.
+- When a name comes out in Spanish: a sign that the translation reached the client and not
+  here.
 
-Antes de rodar, confira se o ragassets já regerou as tabelas para a versão nova do cliente
-— sincronizar contra uma tabela velha não adianta nada.
+Before running it, check whether ragassets has already regenerated the tables for the new
+client version — syncing against an old table gets you nowhere.
 
-## Como rodar
+## How to run it
 
 ```bash
 pnpm sync:items
 ```
 
-Busca `https://assets.latam-tools.com.br/raw/items.json` e reescreve
-`data/latam-items.json`. Sem rede, com o ragassets ao lado:
+Fetches `https://assets.latam-tools.com.br/raw/items.json` and rewrites
+`data/latam-items.json`. Without network, with ragassets next door:
 
 ```bash
 node tools/sync-items.mjs --input ../ragassets/resources/raw/items.json
 ```
 
-Também aceita `--url` (outra origem) e `--out` (outro destino). O `LATAM_ITEMS_SOURCE` de
-antes saiu: ele apontava para um catálogo já convertido, e a origem agora é a tabela crua
-do cliente — o mesmo nome com um conteúdo incompatível daria um erro difícil de entender.
+It also takes `--url` (another source) and `--out` (another destination). The former
+`LATAM_ITEMS_SOURCE` is gone: it pointed at an already-converted catalogue, and the source
+is now the client's raw table — the same name with incompatible content would give an error
+that is hard to understand.
 
-## O que sai
+## What it produces
 
-`data/latam-items.json`: um objeto chaveado pelo id do item, JSON compacto, ~6,6 MB.
+`data/latam-items.json`: an object keyed by item id, compact JSON, ~6.6 MB.
 
 ```json
 {"501":{"name":"Poção Vermelha","description":"…","aegisName":"빨간포션"}}
 ```
 
-`description`, `aegisName` e `slots` são opcionais e **somem** quando vazios (`slots: 0` é
-ausência de slot). A ordem das chaves é parte do formato: é ela que faz duas gerações do
-mesmo dado saírem byte a byte iguais.
+`description`, `aegisName` and `slots` are optional and **disappear** when empty (`slots: 0`
+is the absence of a slot). Key order is part of the format: it is what makes two generations
+of the same data come out byte for byte identical.
 
-O script imprime a contagem antes e depois, e avisa quando o catálogo novo tem menos itens
-que o anterior — o que quase sempre quer dizer que a origem estava pela metade.
+The script prints the count before and after, and warns when the new catalogue has fewer
+items than the previous one — which almost always means the source was only half there.
 
-## Como conferir
+## How to check it
 
 ```bash
 git diff --stat data/latam-items.json
 ```
 
-- **Sem diff** é o esperado quando o cliente não mudou desde o último sync. É também o
-  teste de que o script não mexeu no formato: se a origem é a mesma e o arquivo mudou, o
-  problema é a conversão, não o dado.
-- **Com diff**, olhe a contagem que o script imprimiu. Item novo entrando é normal depois
-  de uma atualização do cliente; item sumindo em massa não é.
+- **No diff** is what to expect when the client has not changed since the last sync. It is
+  also the test that the script did not touch the format: if the source is the same and the
+  file changed, the problem is the conversion, not the data.
+- **With a diff**, look at the count the script printed. A new item coming in is normal
+  after a client update; items vanishing en masse is not.
 
-Depois:
+Afterwards:
 
 ```bash
-pnpm test        # inclui o teste de formato da conversão
+pnpm test        # includes the conversion's format test
 pnpm typecheck
 ```
 
-Um diff aqui dispara os **dois** deploys: o serviço (que embarca o arquivo no tar) e a
-interface (`web-deploy.yml` observa este caminho, porque `web/scripts/build-catalogue.mjs`
-gera dele as descrições e a lista de intransferíveis). Vale entrar em commit próprio, para
-o `git log` mostrar quando o catálogo andou.
+A diff here fires **both** deploys: the service (which embeds the file in the tar) and the
+interface (`web-deploy.yml` watches this path, because `web/scripts/build-catalogue.mjs`
+generates the descriptions and the untradable list from it). It is worth a commit of its
+own, so `git log` shows when the catalogue moved.
+
+## What stays in Portuguese, and why
+
+- `name:` in the frontmatter is the skill's identifier: renaming it breaks every reference
+  to it.
+- Command, flag, script, file, JSON field and product names are called, not read — they stay
+  as they are spelled.
+- Strings quoted from the game or the interface (`"Poção Vermelha"`, `"빨간포션"`) are the
+  data itself. The catalogue is pt-BR, so translating an example would make this skill
+  describe a file that does not exist.
