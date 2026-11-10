@@ -11,9 +11,17 @@
  * A origem é o [ragassets](https://github.com/adsonpleal/ragassets), que extrai as tabelas
  * do cliente e as publica em `https://assets.latam-tools.com.br/raw/`. De lá vem um vetor
  * ordenado por id:
- *   { id, name, slots, aegisName, resourceName, description, view, equipSlots, costume }
+ *   { id, name, slots, aegisName, resourceName, description, view, spriteView,
+ *     spriteBlank, viewKind, equipSlots, costume, contains? }
  * Daqui sai um objeto chaveado por id com só os quatro campos que o serviço lê (veja
- * `LatamItem` em `src/store/rows.ts`). A conversão está em `catalogueFrom`.
+ * `LatamItem` em `src/store/rows.ts`). A conversão está em `catalogueFrom`, e ela lê os
+ * campos pelo nome: a origem ganhar coluna nova (`spriteView`, `viewKind`, `contains`…)
+ * não muda o que sai daqui.
+ *
+ * `name` é o nome identificado **sem** os slots — o sufixo `[3]` é junção de exibição, e
+ * `slots` vem separado para quem exibe decidir. O mesmo vetor existe por idioma em
+ * `items_en.json` e `items_es.json`; o catálogo daqui é só o pt-BR, que é a tabela sem
+ * sufixo.
  *
  * Uso:
  *   node tools/sync-items.mjs                    # busca de assets.latam-tools.com.br
